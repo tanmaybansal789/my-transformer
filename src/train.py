@@ -61,8 +61,8 @@ class Trainer:
                 loss.backward()
                 self.optimiser.step()
 
-                if epoch % 100 == 0:
-                    print(f'epoch {epoch}/{self.training_config["epochs"]}, loss={loss.item()}')
+                if (epoch + 1) % 10 == 0 or epoch == 0:
+                    print(f'epoch {epoch+1}/{self.training_config["epochs"]}, loss={loss.item()}')
         except KeyboardInterrupt:
             print('Training interrupted. Saving checkpoint...')
 
