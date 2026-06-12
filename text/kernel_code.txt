@@ -1,0 +1,2795 @@
+
+
+
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef TARGET_CORE_BASE_H
+#define TARGET_CORE_BASE_H
+
+#include <linux/configfs.h>      /* struct config_group */
+#include <linux/dma-direction.h> /* enum dma_data_direction */
+#include <linux/sbitmap.h>
+#include <linux/percpu-refcount.h>
+#include <linux/semaphore.h>     /* struct semaphore */
+#include <linux/completion.h>
+
+#define TARGET_CORE_VERSION		"v5.0"
+
+/*
+ * Maximum size of a CDB that can be stored in se_cmd without allocating
+ * memory dynamically for the CDB.
+ */
+#define TCM_MAX_COMMAND_SIZE			32
+/*
+ * From include/scsi/scsi_cmnd.h:SCSI_SENSE_BUFFERSIZE, currently
+ * defined 96, but the real limit is 252 (or 260 including the header)
+ */
+#define TRANSPORT_SENSE_BUFFER			96
+/* Used by transport_send_check_condition_and_sense() */
+#define SPC_SENSE_KEY_OFFSET			2
+#define SPC_ADD_SENSE_LEN_OFFSET		7
+#define SPC_DESC_TYPE_OFFSET			8
+#define SPC_ADDITIONAL_DESC_LEN_OFFSET		9
+#define SPC_VALIDITY_OFFSET			10
+#define SPC_ASC_KEY_OFFSET			12
+#define SPC_ASCQ_KEY_OFFSET			13
+#define TRANSPORT_IQN_LEN			224
+/* Used by target_core_store_alua_lu_gp() and target_core_alua_lu_gp_show_attr_members() */
+#define LU_GROUP_NAME_BUF			256
+/* Used by core_alua_store_tg_pt_gp_info() and target_core_alua_tg_pt_gp_show_attr_members() */
+#define TG_PT_GROUP_NAME_BUF			256
+/* Used to parse VPD into struct t10_vpd */
+#define VPD_TMP_BUF_SIZE			254
+/* Used by transport_generic_cmd_sequencer() */
+#define READ_BLOCK_LEN          		6
+#define READ_CAP_LEN            		8
+#define READ_POSITION_LEN       		20
+#define INQUIRY_LEN				36
+/* Used by transport_get_inquiry_vpd_serial() */
+#define INQUIRY_VPD_SERIAL_LEN			254
+/* Used by transport_get_inquiry_vpd_device_ident() */
+#define INQUIRY_VPD_DEVICE_IDENTIFIER_LEN	254
+
+#define INQUIRY_VENDOR_LEN			8
+#define INQUIRY_MODEL_LEN			16
+#define INQUIRY_REVISION_LEN			4
+
+/* Attempts before moving from SHORT to LONG */
+#define PYX_TRANSPORT_WINDOW_CLOSED_THRESHOLD	3
+#define PYX_TRANSPORT_WINDOW_CLOSED_WAIT_SHORT	3  /* In milliseconds */
+#define PYX_TRANSPORT_WINDOW_CLOSED_WAIT_LONG	10 /* In milliseconds */
+
+#define PYX_TRANSPORT_STATUS_INTERVAL		5 /* In seconds */
+
+/* struct se_dev_attrib sanity values */
+/* Default max_unmap_lba_count */
+#define DA_MAX_UNMAP_LBA_COUNT			0
+/* Default max_unmap_block_desc_count */
+#define DA_MAX_UNMAP_BLOCK_DESC_COUNT		0
+/* Default unmap_granularity */
+#define DA_UNMAP_GRANULARITY_DEFAULT		0
+/* Default unmap_granularity_alignment */
+#define DA_UNMAP_GRANULARITY_ALIGNMENT_DEFAULT	0
+/* Default unmap_zeroes_data */
+#define DA_UNMAP_ZEROES_DATA_DEFAULT		0
+/* Default max_write_same_len, disabled by default */
+#define DA_MAX_WRITE_SAME_LEN			0
+/* Use a model alias based on the configfs backend device name */
+#define DA_EMULATE_MODEL_ALIAS			0
+/* Emulation for WriteCache and SYNCHRONIZE_CACHE */
+#define DA_EMULATE_WRITE_CACHE			0
+/* Emulation for TASK_ABORTED status (TAS) by default */
+#define DA_EMULATE_TAS				1
+/* Emulation for Thin Provisioning UNMAP using block/blk-lib.c:blkdev_issue_discard() */
+#define DA_EMULATE_TPU				0
+/*
+ * Emulation for Thin Provisioning WRITE_SAME w/ UNMAP=1 bit using
+ * block/blk-lib.c:blkdev_issue_discard()
+ */
+#define DA_EMULATE_TPWS				0
+/* Emulation for CompareAndWrite (AtomicTestandSet) by default */
+#define DA_EMULATE_CAW				1
+/* Emulation for 3rd Party Copy (ExtendedCopy) by default */
+#define DA_EMULATE_3PC				1
+/* No Emulation for PSCSI by default */
+#define DA_EMULATE_ALUA				0
+/* Emulate SCSI2 RESERVE/RELEASE and Persistent Reservations by default */
+#define DA_EMULATE_PR				1
+/* Emulation for REPORT SUPPORTED OPERATION CODES */
+#define DA_EMULATE_RSOC				1
+/* Enforce SCSI Initiator Port TransportID with 'ISID' for PR */
+#define DA_ENFORCE_PR_ISIDS			1
+/* Force SPC-3 PR Activate Persistence across Target Power Loss */
+#define DA_FORCE_PR_APTPL			0
+#define DA_STATUS_MAX_SECTORS_MIN		16
+#define DA_STATUS_MAX_SECTORS_MAX		8192
+/* By default don't report non-rotating (solid state) medium */
+#define DA_IS_NONROT				0
+/* Queue Algorithm Modifier default for restricted reordering in control mode page */
+#define DA_EMULATE_REST_REORD			0
+
+#define SE_INQUIRY_BUF				1024
+#define SE_MODE_PAGE_BUF			512
+#define SE_SENSE_BUF				96
+
+enum target_submit_type {
+	/* Use the fabric driver's default submission type */
+	TARGET_FABRIC_DEFAULT_SUBMIT,
+	/* Submit from the calling context */
+	TARGET_DIRECT_SUBMIT,
+	/* Defer submission to the LIO workqueue */
+	TARGET_QUEUE_SUBMIT,
+};
+
+/* struct se_hba->hba_flags */
+enum hba_flags_table {
+	HBA_FLAGS_INTERNAL_USE	= 0x01,
+	HBA_FLAGS_PSCSI_MODE	= 0x02,
+};
+
+/* Special transport agnostic struct se_cmd->t_states */
+enum transport_state_table {
+	TRANSPORT_NO_STATE	= 0,
+	TRANSPORT_NEW_CMD	= 1,
+	TRANSPORT_WRITE_PENDING	= 3,
+	TRANSPORT_PROCESSING	= 5,
+	TRANSPORT_COMPLETE	= 6,
+	TRANSPORT_ISTATE_PROCESSING = 11,
+	TRANSPORT_COMPLETE_QF_WP = 18,
+	TRANSPORT_COMPLETE_QF_OK = 19,
+	TRANSPORT_COMPLETE_QF_ERR = 20,
+};
+
+/* Used for struct se_cmd->se_cmd_flags */
+enum se_cmd_flags_table {
+	SCF_SUPPORTED_SAM_OPCODE		= (1 << 0),
+	SCF_TRANSPORT_TASK_SENSE		= (1 << 1),
+	SCF_EMULATED_TASK_SENSE			= (1 << 2),
+	SCF_SCSI_DATA_CDB			= (1 << 3),
+	SCF_SCSI_TMR_CDB			= (1 << 4),
+	SCF_FUA					= (1 << 5),
+	SCF_SE_LUN_CMD				= (1 << 6),
+	SCF_BIDI				= (1 << 7),
+	SCF_SENT_CHECK_CONDITION		= (1 << 8),
+	SCF_OVERFLOW_BIT			= (1 << 9),
+	SCF_UNDERFLOW_BIT			= (1 << 10),
+	SCF_ALUA_NON_OPTIMIZED			= (1 << 11),
+	SCF_PASSTHROUGH_SG_TO_MEM_NOALLOC	= (1 << 12),
+	SCF_COMPARE_AND_WRITE			= (1 << 13),
+	SCF_PASSTHROUGH_PROT_SG_TO_MEM_NOALLOC	= (1 << 14),
+	SCF_ACK_KREF				= (1 << 15),
+	SCF_USE_CPUID				= (1 << 16),
+	SCF_TASK_ATTR_SET			= (1 << 17),
+	SCF_TREAT_READ_AS_NORMAL		= (1 << 18),
+	SCF_TASK_ORDERED_SYNC			= (1 << 19),
+	SCF_ATOMIC				= (1 << 20),
+};
+
+/*
+ * Used by transport_send_check_condition_and_sense()
+ * to signal which ASC/ASCQ sense payload should be built.
+ */
+typedef unsigned __bitwise sense_reason_t;
+
+enum tcm_sense_reason_table {
+#define R(x)	(__force sense_reason_t )(x)
+	TCM_NO_SENSE				= R(0x00),
+	TCM_NON_EXISTENT_LUN			= R(0x01),
+	TCM_UNSUPPORTED_SCSI_OPCODE		= R(0x02),
+	TCM_INCORRECT_AMOUNT_OF_DATA		= R(0x03),
+	TCM_UNEXPECTED_UNSOLICITED_DATA		= R(0x04),
+	TCM_SERVICE_CRC_ERROR			= R(0x05),
+	TCM_SNACK_REJECTED			= R(0x06),
+	TCM_SECTOR_COUNT_TOO_MANY		= R(0x07),
+	TCM_INVALID_CDB_FIELD			= R(0x08),
+	TCM_INVALID_PARAMETER_LIST		= R(0x09),
+	TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE	= R(0x0a),
+	TCM_UNKNOWN_MODE_PAGE			= R(0x0b),
+	TCM_WRITE_PROTECTED			= R(0x0c),
+	TCM_CHECK_CONDITION_ABORT_CMD		= R(0x0d),
+	TCM_CHECK_CONDITION_UNIT_ATTENTION	= R(0x0e),
+
+	TCM_RESERVATION_CONFLICT		= R(0x10),
+	TCM_ADDRESS_OUT_OF_RANGE		= R(0x11),
+	TCM_OUT_OF_RESOURCES			= R(0x12),
+	TCM_PARAMETER_LIST_LENGTH_ERROR		= R(0x13),
+	TCM_MISCOMPARE_VERIFY			= R(0x14),
+	TCM_LOGICAL_BLOCK_GUARD_CHECK_FAILED	= R(0x15),
+	TCM_LOGICAL_BLOCK_APP_TAG_CHECK_FAILED	= R(0x16),
+	TCM_LOGICAL_BLOCK_REF_TAG_CHECK_FAILED	= R(0x17),
+	TCM_COPY_TARGET_DEVICE_NOT_REACHABLE	= R(0x18),
+	TCM_TOO_MANY_TARGET_DESCS		= R(0x19),
+	TCM_UNSUPPORTED_TARGET_DESC_TYPE_CODE	= R(0x1a),
+	TCM_TOO_MANY_SEGMENT_DESCS		= R(0x1b),
+	TCM_UNSUPPORTED_SEGMENT_DESC_TYPE_CODE	= R(0x1c),
+	TCM_INSUFFICIENT_REGISTRATION_RESOURCES	= R(0x1d),
+	TCM_LUN_BUSY				= R(0x1e),
+	TCM_INVALID_FIELD_IN_COMMAND_IU         = R(0x1f),
+	TCM_ALUA_TG_PT_STANDBY			= R(0x20),
+	TCM_ALUA_TG_PT_UNAVAILABLE		= R(0x21),
+	TCM_ALUA_STATE_TRANSITION		= R(0x22),
+	TCM_ALUA_OFFLINE			= R(0x23),
+#undef R
+};
+
+enum target_sc_flags_table {
+	TARGET_SCF_BIDI_OP		= 0x01,
+	TARGET_SCF_ACK_KREF		= 0x02,
+	TARGET_SCF_UNKNOWN_SIZE		= 0x04,
+	TARGET_SCF_USE_CPUID		= 0x08,
+};
+
+/* fabric independent task management function values */
+enum tcm_tmreq_table {
+	TMR_ABORT_TASK		= 1,
+	TMR_ABORT_TASK_SET	= 2,
+	TMR_CLEAR_ACA		= 3,
+	TMR_CLEAR_TASK_SET	= 4,
+	TMR_LUN_RESET		= 5,
+	TMR_TARGET_WARM_RESET	= 6,
+	TMR_TARGET_COLD_RESET	= 7,
+	TMR_LUN_RESET_PRO	= 0x80,
+	TMR_UNKNOWN		= 0xff,
+};
+
+/* fabric independent task management response values */
+enum tcm_tmrsp_table {
+	TMR_FUNCTION_FAILED		= 0,
+	TMR_FUNCTION_COMPLETE		= 1,
+	TMR_TASK_DOES_NOT_EXIST		= 2,
+	TMR_LUN_DOES_NOT_EXIST		= 3,
+	TMR_TASK_MGMT_FUNCTION_NOT_SUPPORTED	= 4,
+	TMR_FUNCTION_REJECTED		= 5,
+};
+
+/*
+ * Used for target SCSI statistics
+ */
+typedef enum {
+	SCSI_INST_INDEX,
+	SCSI_AUTH_INTR_INDEX,
+	SCSI_INDEX_TYPE_MAX
+} scsi_index_t;
+
+struct se_cmd;
+
+struct t10_alua_lba_map_member {
+	struct list_head lba_map_mem_list;
+	int lba_map_mem_alua_state;
+	int lba_map_mem_alua_pg_id;
+};
+
+struct t10_alua_lba_map {
+	u64 lba_map_first_lba;
+	u64 lba_map_last_lba;
+	struct list_head lba_map_list;
+	struct list_head lba_map_mem_list;
+};
+
+struct t10_alua {
+	/* ALUA Target Port Group ID */
+	u16	alua_tg_pt_gps_counter;
+	u32	alua_tg_pt_gps_count;
+	/* Referrals support */
+	spinlock_t lba_map_lock;
+	u32     lba_map_segment_size;
+	u32     lba_map_segment_multiplier;
+	struct list_head lba_map_list;
+	spinlock_t tg_pt_gps_lock;
+	struct se_device *t10_dev;
+	/* Used for default ALUA Target Port Group */
+	struct t10_alua_tg_pt_gp *default_tg_pt_gp;
+	/* Used for default ALUA Target Port Group ConfigFS group */
+	struct config_group alua_tg_pt_gps_group;
+	struct list_head tg_pt_gps_list;
+};
+
+struct t10_alua_lu_gp {
+	u16	lu_gp_id;
+	int	lu_gp_valid_id;
+	u32	lu_gp_members;
+	atomic_t lu_gp_ref_cnt;
+	spinlock_t lu_gp_lock;
+	struct config_group lu_gp_group;
+	struct list_head lu_gp_node;
+	struct list_head lu_gp_mem_list;
+};
+
+struct t10_alua_lu_gp_member {
+	bool lu_gp_assoc;
+	atomic_t lu_gp_mem_ref_cnt;
+	spinlock_t lu_gp_mem_lock;
+	struct t10_alua_lu_gp *lu_gp;
+	struct se_device *lu_gp_mem_dev;
+	struct list_head lu_gp_mem_list;
+};
+
+struct t10_alua_tg_pt_gp {
+	u16	tg_pt_gp_id;
+	int	tg_pt_gp_valid_id;
+	int	tg_pt_gp_alua_supported_states;
+	int	tg_pt_gp_alua_access_status;
+	int	tg_pt_gp_alua_access_type;
+	int	tg_pt_gp_nonop_delay_msecs;
+	int	tg_pt_gp_trans_delay_msecs;
+	int	tg_pt_gp_implicit_trans_secs;
+	int	tg_pt_gp_pref;
+	int	tg_pt_gp_write_metadata;
+	u32	tg_pt_gp_members;
+	int	tg_pt_gp_alua_access_state;
+	atomic_t tg_pt_gp_ref_cnt;
+	spinlock_t tg_pt_gp_lock;
+	struct mutex tg_pt_gp_transition_mutex;
+	struct se_device *tg_pt_gp_dev;
+	struct config_group tg_pt_gp_group;
+	struct list_head tg_pt_gp_list;
+	struct list_head tg_pt_gp_lun_list;
+	struct se_lun *tg_pt_gp_alua_lun;
+	struct se_node_acl *tg_pt_gp_alua_nacl;
+};
+
+struct t10_vpd {
+	unsigned char device_identifier[INQUIRY_VPD_DEVICE_IDENTIFIER_LEN];
+	int protocol_identifier_set;
+	u32 protocol_identifier;
+	u32 device_identifier_code_set;
+	u32 association;
+	u32 device_identifier_type;
+	struct list_head vpd_list;
+};
+
+struct t10_wwn {
+	/*
+	 * SCSI left aligned strings may not be null terminated. +1 to ensure a
+	 * null terminator is always present.
+	 */
+	char vendor[INQUIRY_VENDOR_LEN + 1];
+	char model[INQUIRY_MODEL_LEN + 1];
+	char revision[INQUIRY_REVISION_LEN + 1];
+	char unit_serial[INQUIRY_VPD_SERIAL_LEN];
+	u32 company_id;
+	spinlock_t t10_vpd_lock;
+	struct se_device *t10_dev;
+	struct config_group t10_wwn_group;
+	struct list_head t10_vpd_list;
+};
+
+struct t10_pr_registration {
+	/* Used for fabrics that contain WWN+ISID */
+#define PR_REG_ISID_LEN				16
+	/* PR_REG_ISID_LEN + ',i,0x' */
+#define PR_REG_ISID_ID_LEN			(PR_REG_ISID_LEN + 5)
+	char pr_reg_isid[PR_REG_ISID_LEN];
+	/* Used during APTPL metadata reading */
+#define PR_APTPL_MAX_IPORT_LEN			256
+	unsigned char pr_iport[PR_APTPL_MAX_IPORT_LEN];
+	/* Used during APTPL metadata reading */
+#define PR_APTPL_MAX_TPORT_LEN			256
+	unsigned char pr_tport[PR_APTPL_MAX_TPORT_LEN];
+	u16 pr_aptpl_rpti;
+	u16 pr_reg_tpgt;
+	/* Reservation effects all target ports */
+	int pr_reg_all_tg_pt;
+	/* Activate Persistence across Target Power Loss */
+	int pr_reg_aptpl;
+	int pr_res_holder;
+	int pr_res_type;
+	int pr_res_scope;
+	/* Used for fabric initiator WWPNs using a ISID */
+	bool isid_present_at_reg;
+	u64 pr_res_mapped_lun;
+	u64 pr_aptpl_target_lun;
+	u16 tg_pt_sep_rtpi;
+	u32 pr_res_generation;
+	u64 pr_reg_bin_isid;
+	u64 pr_res_key;
+	atomic_t pr_res_holders;
+	struct se_node_acl *pr_reg_nacl;
+	/* Used by ALL_TG_PT=1 registration with deve->pr_ref taken */
+	struct se_dev_entry *pr_reg_deve;
+	struct list_head pr_reg_list;
+	struct list_head pr_reg_abort_list;
+	struct list_head pr_reg_aptpl_list;
+	struct list_head pr_reg_atp_list;
+	struct list_head pr_reg_atp_mem_list;
+};
+
+struct t10_reservation {
+	/* Reservation effects all target ports */
+	int pr_all_tg_pt;
+	/* Activate Persistence across Target Power Loss enabled
+	 * for SCSI device */
+	int pr_aptpl_active;
+#define PR_APTPL_BUF_LEN			262144
+	u32 pr_generation;
+	spinlock_t registration_lock;
+	spinlock_t aptpl_reg_lock;
+	/*
+	 * This will always be set by one individual I_T Nexus.
+	 * However with all_tg_pt=1, other I_T Nexus from the
+	 * same initiator can access PR reg/res info on a different
+	 * target port.
+	 *
+	 * There is also the 'All Registrants' case, where there is
+	 * a single *pr_res_holder of the reservation, but all
+	 * registrations are considered reservation holders.
+	 */
+	struct se_node_acl *pr_res_holder;
+	struct list_head registration_list;
+	struct list_head aptpl_reg_list;
+};
+
+struct se_tmr_req {
+	/* Task Management function to be performed */
+	u8			function;
+	/* Task Management response to send */
+	u8			response;
+	int			call_transport;
+	/* Reference to ITT that Task Mgmt should be performed */
+	u64			ref_task_tag;
+	void 			*fabric_tmr_ptr;
+	struct se_cmd		*task_cmd;
+	struct se_device	*tmr_dev;
+	struct list_head	tmr_list;
+};
+
+enum target_prot_op {
+	TARGET_PROT_NORMAL	= 0,
+	TARGET_PROT_DIN_INSERT	= (1 << 0),
+	TARGET_PROT_DOUT_INSERT	= (1 << 1),
+	TARGET_PROT_DIN_STRIP	= (1 << 2),
+	TARGET_PROT_DOUT_STRIP	= (1 << 3),
+	TARGET_PROT_DIN_PASS	= (1 << 4),
+	TARGET_PROT_DOUT_PASS	= (1 << 5),
+};
+
+#define TARGET_PROT_ALL	TARGET_PROT_DIN_INSERT | TARGET_PROT_DOUT_INSERT | \
+			TARGET_PROT_DIN_STRIP | TARGET_PROT_DOUT_STRIP | \
+			TARGET_PROT_DIN_PASS | TARGET_PROT_DOUT_PASS
+
+enum target_prot_type {
+	TARGET_DIF_TYPE0_PROT,
+	TARGET_DIF_TYPE1_PROT,
+	TARGET_DIF_TYPE2_PROT,
+	TARGET_DIF_TYPE3_PROT,
+};
+
+/* Emulation for UNIT ATTENTION Interlock Control */
+enum target_ua_intlck_ctrl {
+	TARGET_UA_INTLCK_CTRL_CLEAR = 0,
+	TARGET_UA_INTLCK_CTRL_NO_CLEAR = 1,
+	TARGET_UA_INTLCK_CTRL_ESTABLISH_UA = 2,
+};
+
+enum target_core_dif_check {
+	TARGET_DIF_CHECK_GUARD  = 0x1 << 0,
+	TARGET_DIF_CHECK_APPTAG = 0x1 << 1,
+	TARGET_DIF_CHECK_REFTAG = 0x1 << 2,
+};
+
+/* for sam_task_attr */
+#define TCM_SIMPLE_TAG	0x20
+#define TCM_HEAD_TAG	0x21
+#define TCM_ORDERED_TAG	0x22
+#define TCM_ACA_TAG	0x24
+
+struct se_cmd {
+	/* Used for fail with specific sense codes */
+	sense_reason_t		sense_reason;
+	/* SAM response code being sent to initiator */
+	u8			scsi_status;
+	u16			scsi_sense_length;
+	unsigned		unknown_data_length:1;
+	bool			state_active:1;
+	u64			tag; /* SAM command identifier aka task tag */
+	/* Delay for ALUA Active/NonOptimized state access in milliseconds */
+	int			alua_nonop_delay;
+	/* See include/linux/dma-mapping.h */
+	enum dma_data_direction	data_direction;
+	/* For SAM Task Attribute */
+	int			sam_task_attr;
+	/* Used for se_sess->sess_tag_pool */
+	unsigned int		map_tag;
+	int			map_cpu;
+	/* Transport protocol dependent state, see transport_state_table */
+	enum transport_state_table t_state;
+	/* See se_cmd_flags_table */
+	u32			se_cmd_flags;
+	/* Total size in bytes associated with command */
+	u32			data_length;
+	u32			residual_count;
+	u64			orig_fe_lun;
+	/* Persistent Reservation key */
+	u64			pr_res_key;
+	/* Used for sense data */
+	void			*sense_buffer;
+	struct list_head	se_delayed_node;
+	struct list_head	se_qf_node;
+	struct se_device      *se_dev;
+	struct se_lun		*se_lun;
+	/* Only used for internal passthrough and legacy TCM fabric modules */
+	struct se_session	*se_sess;
+	struct target_cmd_counter *cmd_cnt;
+	struct se_tmr_req	*se_tmr_req;
+	struct llist_node	se_cmd_list;
+	struct completion	*free_compl;
+	struct completion	*abrt_compl;
+	const struct target_core_fabric_ops *se_tfo;
+	sense_reason_t		(*execute_cmd)(struct se_cmd *);
+	sense_reason_t (*transport_complete_callback)(struct se_cmd *, bool, int *);
+	void			*protocol_data;
+
+	unsigned char		*t_task_cdb;
+	unsigned char		__t_task_cdb[TCM_MAX_COMMAND_SIZE];
+	unsigned long long	t_task_lba;
+	unsigned int		t_task_nolb;
+	unsigned int		transport_state;
+#define CMD_T_ABORTED		(1 << 0)
+#define CMD_T_ACTIVE		(1 << 1)
+#define CMD_T_COMPLETE		(1 << 2)
+#define CMD_T_SENT		(1 << 4)
+#define CMD_T_STOP		(1 << 5)
+#define CMD_T_TAS		(1 << 10)
+#define CMD_T_FABRIC_STOP	(1 << 11)
+	spinlock_t		t_state_lock;
+	struct kref		cmd_kref;
+	struct completion	t_transport_stop_comp;
+
+	struct work_struct	work;
+
+	struct scatterlist	*t_data_sg;
+	struct scatterlist	*t_data_sg_orig;
+	unsigned int		t_data_nents;
+	unsigned int		t_data_nents_orig;
+	void			*t_data_vmap;
+	struct scatterlist	*t_bidi_data_sg;
+	unsigned int		t_bidi_data_nents;
+
+	/* Used for lun->lun_ref counting */
+	int			lun_ref_active;
+
+	struct list_head	state_list;
+
+	/* backend private data */
+	void			*priv;
+
+	/* DIF related members */
+	enum target_prot_op	prot_op;
+	enum target_prot_type	prot_type;
+	u8			prot_checks;
+	bool			prot_pto;
+	u32			prot_length;
+	u32			reftag_seed;
+	struct scatterlist	*t_prot_sg;
+	unsigned int		t_prot_nents;
+	sense_reason_t		pi_err;
+	u64			sense_info;
+	/*
+	 * CPU LIO will execute the cmd on. Defaults to the CPU the cmd is
+	 * initialized on. Drivers can override.
+	 */
+	int			cpuid;
+};
+
+struct se_ua {
+	u8			ua_asc;
+	u8			ua_ascq;
+	struct list_head	ua_nacl_list;
+};
+
+struct se_node_acl {
+	char			initiatorname[TRANSPORT_IQN_LEN];
+	/* Used to signal demo mode created ACL, disabled by default */
+	bool			dynamic_node_acl;
+	bool			dynamic_stop;
+	u32			queue_depth;
+	u32			acl_index;
+	enum target_prot_type	saved_prot_type;
+#define MAX_ACL_TAG_SIZE 64
+	char			acl_tag[MAX_ACL_TAG_SIZE];
+	/* Used for PR SPEC_I_PT=1 and REGISTER_AND_MOVE */
+	atomic_t		acl_pr_ref_count;
+	struct hlist_head	lun_entry_hlist;
+	struct se_session	*nacl_sess;
+	struct se_portal_group *se_tpg;
+	struct mutex		lun_entry_mutex;
+	spinlock_t		nacl_sess_lock;
+	struct config_group	acl_group;
+	struct config_group	acl_attrib_group;
+	struct config_group	acl_auth_group;
+	struct config_group	acl_param_group;
+	struct config_group	acl_fabric_stat_group;
+	struct list_head	acl_list;
+	struct list_head	acl_sess_list;
+	struct completion	acl_free_comp;
+	struct kref		acl_kref;
+};
+
+static inline struct se_node_acl *acl_to_nacl(struct config_item *item)
+{
+	return container_of(to_config_group(item), struct se_node_acl,
+			acl_group);
+}
+
+static inline struct se_node_acl *attrib_to_nacl(struct config_item *item)
+{
+	return container_of(to_config_group(item), struct se_node_acl,
+			acl_attrib_group);
+}
+
+static inline struct se_node_acl *auth_to_nacl(struct config_item *item)
+{
+	return container_of(to_config_group(item), struct se_node_acl,
+			acl_auth_group);
+}
+
+static inline struct se_node_acl *param_to_nacl(struct config_item *item)
+{
+	return container_of(to_config_group(item), struct se_node_acl,
+			acl_param_group);
+}
+
+static inline struct se_node_acl *fabric_stat_to_nacl(struct config_item *item)
+{
+	return container_of(to_config_group(item), struct se_node_acl,
+			acl_fabric_stat_group);
+}
+
+struct target_cmd_counter {
+	struct percpu_ref	refcnt;
+	wait_queue_head_t	refcnt_wq;
+	struct completion	stop_done;
+	atomic_t		stopped;
+};
+
+struct se_session {
+	u64			sess_bin_isid;
+	enum target_prot_op	sup_prot_ops;
+	enum target_prot_type	sess_prot_type;
+	struct se_node_acl	*se_node_acl;
+	struct se_portal_group *se_tpg;
+	void			*fabric_sess_ptr;
+	struct list_head	sess_list;
+	struct list_head	sess_acl_list;
+	spinlock_t		sess_cmd_lock;
+	void			*sess_cmd_map;
+	struct sbitmap_queue	sess_tag_pool;
+	struct target_cmd_counter *cmd_cnt;
+};
+
+struct se_device;
+struct se_transform_info;
+struct scatterlist;
+
+struct se_ml_stat_grps {
+	struct config_group	stat_group;
+	struct config_group	scsi_auth_intr_group;
+	struct config_group	scsi_att_intr_port_group;
+};
+
+struct se_lun_acl {
+	u64			mapped_lun;
+	struct se_node_acl	*se_lun_nacl;
+	struct se_lun		*se_lun;
+	struct config_group	se_lun_group;
+	struct se_ml_stat_grps	ml_stat_grps;
+};
+
+struct se_dev_entry_io_stats {
+	u64			total_cmds;
+	u64			read_bytes;
+	u64			write_bytes;
+};
+
+struct se_dev_entry {
+	u64			mapped_lun;
+	u64			pr_res_key;
+	u64			creation_time;
+	bool			lun_access_ro;
+	u32			attach_count;
+	struct se_dev_entry_io_stats __percpu	*stats;
+	/* Used for PR SPEC_I_PT=1 and REGISTER_AND_MOVE */
+	struct kref		pr_kref;
+	struct completion	pr_comp;
+	struct se_lun_acl	*se_lun_acl;
+	spinlock_t		ua_lock;
+	struct se_lun		*se_lun;
+#define DEF_PR_REG_ACTIVE		1
+	unsigned long		deve_flags;
+	struct list_head	alua_port_list;
+	struct list_head	lun_link;
+	struct list_head	ua_list;
+	struct hlist_node	link;
+	struct rcu_head		rcu_head;
+};
+
+struct se_dev_attrib {
+	bool		emulate_model_alias;
+	bool		emulate_dpo;		/* deprecated */
+	bool		emulate_fua_write;
+	bool		emulate_fua_read;	/* deprecated */
+	bool		emulate_write_cache;
+	enum target_ua_intlck_ctrl emulate_ua_intlck_ctrl;
+	bool		emulate_tas;
+	bool		emulate_tpu;
+	bool		emulate_tpws;
+	bool		emulate_caw;
+	bool		emulate_3pc;
+	bool		emulate_pr;
+	bool		emulate_rsoc;
+	enum target_prot_type pi_prot_type;
+	enum target_prot_type hw_pi_prot_type;
+	bool		pi_prot_verify;
+	bool		enforce_pr_isids;
+	bool		force_pr_aptpl;
+	bool		is_nonrot;
+	bool		emulate_rest_reord;
+	bool		unmap_zeroes_data;
+	u32		hw_block_size;
+	u32		block_size;
+	u32		hw_max_sectors;
+	u32		optimal_sectors;
+	u32		hw_queue_depth;
+	u32		queue_depth;
+	u32		max_unmap_lba_count;
+	u32		max_unmap_block_desc_count;
+	u32		unmap_granularity;
+	u32		unmap_granularity_alignment;
+	u32		max_write_same_len;
+	u32		atomic_max_len;
+	u32		atomic_alignment;
+	u32		atomic_granularity;
+	u32		atomic_max_with_boundary;
+	u32		atomic_max_boundary;
+	u8		submit_type;
+	struct se_device *da_dev;
+	struct config_group da_group;
+};
+
+struct se_port_stat_grps {
+	struct config_group stat_group;
+	struct config_group scsi_port_group;
+	struct config_group scsi_tgt_port_group;
+	struct config_group scsi_transport_group;
+};
+
+struct scsi_port_stats {
+	u64			cmd_pdus;
+	u64			tx_data_octets;
+	u64			rx_data_octets;
+};
+
+struct se_lun {
+	u64			unpacked_lun;
+	bool			lun_shutdown;
+	bool			lun_access_ro;
+	u32			lun_index;
+
+	atomic_t		lun_acl_count;
+	struct se_device __rcu	*lun_se_dev;
+
+	struct list_head	lun_deve_list;
+	spinlock_t		lun_deve_lock;
+
+	/* ALUA state */
+	int			lun_tg_pt_secondary_stat;
+	int			lun_tg_pt_secondary_write_md;
+	atomic_t		lun_tg_pt_secondary_offline;
+	struct mutex		lun_tg_pt_md_mutex;
+
+	/* ALUA target port group linkage */
+	struct list_head	lun_tg_pt_gp_link;
+	struct t10_alua_tg_pt_gp __rcu *lun_tg_pt_gp;
+	spinlock_t		lun_tg_pt_gp_lock;
+
+	struct se_portal_group	*lun_tpg;
+	struct scsi_port_stats	__percpu *lun_stats;
+	struct config_group	lun_group;
+	struct se_port_stat_grps port_stat_grps;
+	struct completion	lun_shutdown_comp;
+	struct percpu_ref	lun_ref;
+	struct list_head	lun_dev_link;
+	struct hlist_node	link;
+	struct rcu_head		rcu_head;
+};
+
+struct se_dev_stat_grps {
+	struct config_group stat_group;
+	struct config_group scsi_dev_group;
+	struct config_group scsi_tgt_dev_group;
+	struct config_group scsi_lu_group;
+};
+
+struct se_cmd_queue {
+	struct llist_head	cmd_list;
+	struct work_struct	work;
+};
+
+struct se_dev_plug {
+	struct se_device	*se_dev;
+};
+
+struct se_device_queue {
+	struct list_head	state_list;
+	spinlock_t		lock;
+	struct se_cmd_queue	sq;
+};
+
+struct se_dev_io_stats {
+	u64			total_cmds;
+	u64			read_bytes;
+	u64			write_bytes;
+};
+
+struct se_device {
+	/* Used for SAM Task Attribute ordering */
+	u32			dev_cur_ordered_id;
+	u32			dev_flags;
+#define DF_CONFIGURED				0x00000001
+#define DF_FIRMWARE_VPD_UNIT_SERIAL		0x00000002
+#define DF_EMULATED_VPD_UNIT_SERIAL		0x00000004
+#define DF_USING_UDEV_PATH			0x00000008
+#define DF_USING_ALIAS				0x00000010
+#define DF_READ_ONLY				0x00000020
+	u8			transport_flags;
+	/* Physical device queue depth */
+	u32			queue_depth;
+	/* Used for SPC-2 reservations enforce of ISIDs */
+	u64			dev_res_bin_isid;
+	/* Pointer to transport specific device structure */
+	u32			dev_index;
+	u64			creation_time;
+	atomic_long_t		num_resets;
+	atomic_long_t		aborts_complete;
+	atomic_long_t		aborts_no_task;
+	struct se_dev_io_stats __percpu	*stats;
+	/* Active commands on this virtual SE device */
+	struct percpu_ref	non_ordered;
+	bool			ordered_sync_in_progress;
+	atomic_t		dev_qf_count;
+	u32			export_count;
+	spinlock_t		delayed_cmd_lock;
+	spinlock_t		dev_reservation_lock;
+	unsigned int		dev_reservation_flags;
+#define DRF_SPC2_RESERVATIONS			0x00000001
+#define DRF_SPC2_RESERVATIONS_WITH_ISID		0x00000002
+	spinlock_t		se_port_lock;
+	spinlock_t		se_tmr_lock;
+	spinlock_t		qf_cmd_lock;
+	struct semaphore	caw_sem;
+	/* Used for legacy SPC-2 reservations */
+	struct se_session	*reservation_holder;
+	/* Used for ALUA Logical Unit Group membership */
+	struct t10_alua_lu_gp_member *dev_alua_lu_gp_mem;
+	/* Used for SPC-3 Persistent Reservations */
+	struct t10_pr_registration *dev_pr_res_holder;
+	struct list_head	dev_sep_list;
+	struct list_head	dev_tmr_list;
+	struct work_struct	qf_work_queue;
+	struct work_struct	delayed_cmd_work;
+	struct list_head	delayed_cmd_list;
+	struct list_head	qf_cmd_list;
+	/* Pointer to associated SE HBA */
+	struct se_hba		*se_hba;
+	/* T10 Inquiry and VPD WWN Information */
+	struct t10_wwn		t10_wwn;
+	/* T10 Asymmetric Logical Unit Assignment for Target Ports */
+	struct t10_alua		t10_alua;
+	/* T10 SPC-2 + SPC-3 Reservations */
+	struct t10_reservation	t10_pr;
+	struct se_dev_attrib	dev_attrib;
+	struct config_group	dev_action_group;
+	struct config_group	dev_group;
+	struct config_group	dev_pr_group;
+	struct se_dev_stat_grps dev_stat_grps;
+#define SE_DEV_ALIAS_LEN 512		/* must be less than PAGE_SIZE */
+	unsigned char		dev_alias[SE_DEV_ALIAS_LEN];
+#define SE_UDEV_PATH_LEN 512		/* must be less than PAGE_SIZE */
+	unsigned char		udev_path[SE_UDEV_PATH_LEN];
+	/* Pointer to template of function pointers for transport */
+	const struct target_backend_ops *transport;
+	struct se_lun		xcopy_lun;
+	/* Protection Information */
+	int			prot_length;
+	/* For se_lun->lun_se_dev RCU read-side critical access */
+	u32			hba_index;
+	struct rcu_head		rcu_head;
+	int			queue_cnt;
+	struct se_device_queue	*queues;
+	struct mutex		lun_reset_mutex;
+};
+
+struct target_opcode_descriptor {
+	u8			support:3;
+	u8			serv_action_valid:1;
+	u8			opcode;
+	u16			service_action;
+	u32			cdb_size;
+	u8			specific_timeout;
+	u16			nominal_timeout;
+	u16			recommended_timeout;
+	bool			(*enabled)(const struct target_opcode_descriptor *descr,
+					   struct se_cmd *cmd);
+	void			(*update_usage_bits)(u8 *usage_bits,
+						     struct se_device *dev);
+	u8			usage_bits[];
+};
+
+struct se_hba {
+	u16			hba_tpgt;
+	u32			hba_id;
+	/* See hba_flags_table */
+	u32			hba_flags;
+	/* Virtual iSCSI devices attached. */
+	u32			dev_count;
+	u32			hba_index;
+	/* Pointer to transport specific host structure. */
+	void			*hba_ptr;
+	struct list_head	hba_node;
+	spinlock_t		device_lock;
+	struct config_group	hba_group;
+	struct mutex		hba_access_mutex;
+	struct target_backend	*backend;
+};
+
+struct se_tpg_np {
+	struct se_portal_group *tpg_np_parent;
+	struct config_group	tpg_np_group;
+};
+
+static inline struct se_tpg_np *to_tpg_np(struct config_item *item)
+{
+	return container_of(to_config_group(item), struct se_tpg_np,
+			tpg_np_group);
+}
+
+struct se_portal_group {
+	/*
+	 * PROTOCOL IDENTIFIER value per SPC4, 7.5.1.
+	 *
+	 * Negative values can be used by fabric drivers for internal use TPGs.
+	 */
+	int			proto_id;
+	bool			enabled;
+	/* RELATIVE TARGET PORT IDENTIFIER */
+	u16			tpg_rtpi;
+	bool			rtpi_manual;
+	/* Used for PR SPEC_I_PT=1 and REGISTER_AND_MOVE */
+	atomic_t		tpg_pr_ref_count;
+	/* Spinlock for adding/removing ACLed Nodes */
+	struct mutex		acl_node_mutex;
+	/* Spinlock for adding/removing sessions */
+	spinlock_t		session_lock;
+	struct mutex		tpg_lun_mutex;
+	/* linked list for initiator ACL list */
+	struct list_head	acl_node_list;
+	struct hlist_head	tpg_lun_hlist;
+	struct se_lun		*tpg_virt_lun0;
+	/* List of TCM sessions associated wth this TPG */
+	struct list_head	tpg_sess_list;
+	/* Pointer to $FABRIC_MOD dependent code */
+	const struct target_core_fabric_ops *se_tpg_tfo;
+	struct se_wwn		*se_tpg_wwn;
+	struct config_group	tpg_group;
+	struct config_group	tpg_lun_group;
+	struct config_group	tpg_np_group;
+	struct config_group	tpg_acl_group;
+	struct config_group	tpg_attrib_group;
+	struct config_group	tpg_auth_group;
+	struct config_group	tpg_param_group;
+};
+
+static inline struct se_portal_group *to_tpg(struct config_item *item)
+{
+	return container_of(to_config_group(item), struct se_portal_group,
+			tpg_group);
+}
+
+static inline struct se_portal_group *attrib_to_tpg(struct config_item *item)
+{
+	return container_of(to_config_group(item), struct se_portal_group,
+			tpg_attrib_group);
+}
+
+static inline struct se_portal_group *auth_to_tpg(struct config_item *item)
+{
+	return container_of(to_config_group(item), struct se_portal_group,
+			tpg_auth_group);
+}
+
+static inline struct se_portal_group *param_to_tpg(struct config_item *item)
+{
+	return container_of(to_config_group(item), struct se_portal_group,
+			tpg_param_group);
+}
+
+enum {
+	/* Use se_cmd's cpuid for completion */
+	SE_COMPL_AFFINITY_CPUID		= -1,
+	/* Complete on current CPU */
+	SE_COMPL_AFFINITY_CURR_CPU	= -2,
+};
+
+struct se_wwn {
+	struct target_fabric_configfs *wwn_tf;
+	void			*priv;
+	struct config_group	wwn_group;
+	struct config_group	fabric_stat_group;
+	struct config_group	param_group;
+	int			cmd_compl_affinity;
+};
+
+static inline void atomic_inc_mb(atomic_t *v)
+{
+	smp_mb__before_atomic();
+	atomic_inc(v);
+	smp_mb__after_atomic();
+}
+
+static inline void atomic_dec_mb(atomic_t *v)
+{
+	smp_mb__before_atomic();
+	atomic_dec(v);
+	smp_mb__after_atomic();
+}
+
+static inline void target_free_tag(struct se_session *sess, struct se_cmd *cmd)
+{
+	sbitmap_queue_clear(&sess->sess_tag_pool, cmd->map_tag, cmd->map_cpu);
+}
+
+#endif /* TARGET_CORE_BASE_H */
+
+
+// SPDX-License-Identifier: GPL-2.0
+/* Lock down the kernel
+ *
+ * Copyright (C) 2016 Red Hat, Inc. All Rights Reserved.
+ * Written by David Howells (dhowells@redhat.com)
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public Licence
+ * as published by the Free Software Foundation; either version
+ * 2 of the Licence, or (at your option) any later version.
+ */
+
+#include <linux/security.h>
+#include <linux/export.h>
+#include <linux/lsm_hooks.h>
+#include <uapi/linux/lsm.h>
+
+static enum lockdown_reason kernel_locked_down;
+
+static const enum lockdown_reason lockdown_levels[] = {LOCKDOWN_NONE,
+						 LOCKDOWN_INTEGRITY_MAX,
+						 LOCKDOWN_CONFIDENTIALITY_MAX};
+
+/*
+ * Put the kernel into lock-down mode.
+ */
+static int lock_kernel_down(const char *where, enum lockdown_reason level)
+{
+	if (kernel_locked_down >= level)
+		return -EPERM;
+
+	kernel_locked_down = level;
+	pr_notice("Kernel is locked down from %s; see man kernel_lockdown.7\n",
+		  where);
+	return 0;
+}
+
+static int __init lockdown_param(char *level)
+{
+	if (!level)
+		return -EINVAL;
+
+	if (strcmp(level, "integrity") == 0)
+		lock_kernel_down("command line", LOCKDOWN_INTEGRITY_MAX);
+	else if (strcmp(level, "confidentiality") == 0)
+		lock_kernel_down("command line", LOCKDOWN_CONFIDENTIALITY_MAX);
+	else
+		return -EINVAL;
+
+	return 0;
+}
+
+early_param("lockdown", lockdown_param);
+
+/**
+ * lockdown_is_locked_down - Find out if the kernel is locked down
+ * @what: Tag to use in notice generated if lockdown is in effect
+ */
+static int lockdown_is_locked_down(enum lockdown_reason what)
+{
+	if (WARN(what >= LOCKDOWN_CONFIDENTIALITY_MAX,
+		 "Invalid lockdown reason"))
+		return -EPERM;
+
+	if (kernel_locked_down >= what) {
+		if (lockdown_reasons[what])
+			pr_notice_ratelimited("Lockdown: %s: %s is restricted; see man kernel_lockdown.7\n",
+				  current->comm, lockdown_reasons[what]);
+		return -EPERM;
+	}
+
+	return 0;
+}
+
+static struct security_hook_list lockdown_hooks[] __ro_after_init = {
+	LSM_HOOK_INIT(locked_down, lockdown_is_locked_down),
+};
+
+static const struct lsm_id lockdown_lsmid = {
+	.name = "lockdown",
+	.id = LSM_ID_LOCKDOWN,
+};
+
+static int __init lockdown_lsm_init(void)
+{
+#if defined(CONFIG_LOCK_DOWN_KERNEL_FORCE_INTEGRITY)
+	lock_kernel_down("Kernel configuration", LOCKDOWN_INTEGRITY_MAX);
+#elif defined(CONFIG_LOCK_DOWN_KERNEL_FORCE_CONFIDENTIALITY)
+	lock_kernel_down("Kernel configuration", LOCKDOWN_CONFIDENTIALITY_MAX);
+#endif
+	security_add_hooks(lockdown_hooks, ARRAY_SIZE(lockdown_hooks),
+			   &lockdown_lsmid);
+	return 0;
+}
+
+static ssize_t lockdown_read(struct file *filp, char __user *buf, size_t count,
+			     loff_t *ppos)
+{
+	char temp[80] = "";
+	int i, offset = 0;
+
+	for (i = 0; i < ARRAY_SIZE(lockdown_levels); i++) {
+		enum lockdown_reason level = lockdown_levels[i];
+
+		if (lockdown_reasons[level]) {
+			const char *label = lockdown_reasons[level];
+
+			if (kernel_locked_down == level)
+				offset += sprintf(temp+offset, "[%s] ", label);
+			else
+				offset += sprintf(temp+offset, "%s ", label);
+		}
+	}
+
+	/* Convert the last space to a newline if needed. */
+	if (offset > 0)
+		temp[offset-1] = '\n';
+
+	return simple_read_from_buffer(buf, count, ppos, temp, strlen(temp));
+}
+
+static ssize_t lockdown_write(struct file *file, const char __user *buf,
+			      size_t n, loff_t *ppos)
+{
+	char *state;
+	int i, len, err = -EINVAL;
+
+	state = memdup_user_nul(buf, n);
+	if (IS_ERR(state))
+		return PTR_ERR(state);
+
+	len = strlen(state);
+	if (len && state[len-1] == '\n') {
+		state[len-1] = '\0';
+		len--;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(lockdown_levels); i++) {
+		enum lockdown_reason level = lockdown_levels[i];
+		const char *label = lockdown_reasons[level];
+
+		if (label && !strcmp(state, label))
+			err = lock_kernel_down("securityfs", level);
+	}
+
+	kfree(state);
+	return err ? err : n;
+}
+
+static const struct file_operations lockdown_ops = {
+	.read  = lockdown_read,
+	.write = lockdown_write,
+};
+
+static int __init lockdown_secfs_init(void)
+{
+	struct dentry *dentry;
+
+	dentry = securityfs_create_file("lockdown", 0644, NULL, NULL,
+					&lockdown_ops);
+	return PTR_ERR_OR_ZERO(dentry);
+}
+
+#ifdef CONFIG_SECURITY_LOCKDOWN_LSM_EARLY
+DEFINE_EARLY_LSM(lockdown) = {
+#else
+DEFINE_LSM(lockdown) = {
+#endif
+	.id = &lockdown_lsmid,
+	.init = lockdown_lsm_init,
+	.initcall_core = lockdown_secfs_init,
+};
+
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * security/tomoyo/condition.c
+ *
+ * Copyright (C) 2005-2011  NTT DATA CORPORATION
+ */
+
+#include "common.h"
+#include <linux/slab.h>
+
+/* List of "struct tomoyo_condition". */
+LIST_HEAD(tomoyo_condition_list);
+
+/**
+ * tomoyo_argv - Check argv[] in "struct linux_binbrm".
+ *
+ * @index:   Index number of @arg_ptr.
+ * @arg_ptr: Contents of argv[@index].
+ * @argc:    Length of @argv.
+ * @argv:    Pointer to "struct tomoyo_argv".
+ * @checked: Set to true if @argv[@index] was found.
+ *
+ * Returns true on success, false otherwise.
+ */
+static bool tomoyo_argv(const unsigned int index, const char *arg_ptr,
+			const int argc, const struct tomoyo_argv *argv,
+			u8 *checked)
+{
+	int i;
+	struct tomoyo_path_info arg;
+
+	arg.name = arg_ptr;
+	for (i = 0; i < argc; argv++, checked++, i++) {
+		bool result;
+
+		if (index != argv->index)
+			continue;
+		*checked = 1;
+		tomoyo_fill_path_info(&arg);
+		result = tomoyo_path_matches_pattern(&arg, argv->value);
+		if (argv->is_not)
+			result = !result;
+		if (!result)
+			return false;
+	}
+	return true;
+}
+
+/**
+ * tomoyo_envp - Check envp[] in "struct linux_binbrm".
+ *
+ * @env_name:  The name of environment variable.
+ * @env_value: The value of environment variable.
+ * @envc:      Length of @envp.
+ * @envp:      Pointer to "struct tomoyo_envp".
+ * @checked:   Set to true if @envp[@env_name] was found.
+ *
+ * Returns true on success, false otherwise.
+ */
+static bool tomoyo_envp(const char *env_name, const char *env_value,
+			const int envc, const struct tomoyo_envp *envp,
+			u8 *checked)
+{
+	int i;
+	struct tomoyo_path_info name;
+	struct tomoyo_path_info value;
+
+	name.name = env_name;
+	tomoyo_fill_path_info(&name);
+	value.name = env_value;
+	tomoyo_fill_path_info(&value);
+	for (i = 0; i < envc; envp++, checked++, i++) {
+		bool result;
+
+		if (!tomoyo_path_matches_pattern(&name, envp->name))
+			continue;
+		*checked = 1;
+		if (envp->value) {
+			result = tomoyo_path_matches_pattern(&value,
+							     envp->value);
+			if (envp->is_not)
+				result = !result;
+		} else {
+			result = true;
+			if (!envp->is_not)
+				result = !result;
+		}
+		if (!result)
+			return false;
+	}
+	return true;
+}
+
+/**
+ * tomoyo_scan_bprm - Scan "struct linux_binprm".
+ *
+ * @ee:   Pointer to "struct tomoyo_execve".
+ * @argc: Length of @argc.
+ * @argv: Pointer to "struct tomoyo_argv".
+ * @envc: Length of @envp.
+ * @envp: Pointer to "struct tomoyo_envp".
+ *
+ * Returns true on success, false otherwise.
+ */
+static bool tomoyo_scan_bprm(struct tomoyo_execve *ee,
+			     const u16 argc, const struct tomoyo_argv *argv,
+			     const u16 envc, const struct tomoyo_envp *envp)
+{
+	struct linux_binprm *bprm = ee->bprm;
+	struct tomoyo_page_dump *dump = &ee->dump;
+	char *arg_ptr = ee->tmp;
+	int arg_len = 0;
+	unsigned long pos = bprm->p;
+	int offset = pos % PAGE_SIZE;
+	int argv_count = bprm->argc;
+	int envp_count = bprm->envc;
+	bool result = true;
+	u8 local_checked[32];
+	u8 *checked;
+
+	if (argc + envc <= sizeof(local_checked)) {
+		checked = local_checked;
+		memset(local_checked, 0, sizeof(local_checked));
+	} else {
+		checked = kzalloc(argc + envc, GFP_NOFS);
+		if (!checked)
+			return false;
+	}
+	while (argv_count || envp_count) {
+		if (!tomoyo_dump_page(bprm, pos, dump)) {
+			result = false;
+			goto out;
+		}
+		pos += PAGE_SIZE - offset;
+		while (offset < PAGE_SIZE) {
+			/* Read. */
+			const char *kaddr = dump->data;
+			const unsigned char c = kaddr[offset++];
+
+			if (c && arg_len < TOMOYO_EXEC_TMPSIZE - 10) {
+				if (c == '\\') {
+					arg_ptr[arg_len++] = '\\';
+					arg_ptr[arg_len++] = '\\';
+				} else if (c > ' ' && c < 127) {
+					arg_ptr[arg_len++] = c;
+				} else {
+					arg_ptr[arg_len++] = '\\';
+					arg_ptr[arg_len++] = (c >> 6) + '0';
+					arg_ptr[arg_len++] =
+						((c >> 3) & 7) + '0';
+					arg_ptr[arg_len++] = (c & 7) + '0';
+				}
+			} else {
+				arg_ptr[arg_len] = '\0';
+			}
+			if (c)
+				continue;
+			/* Check. */
+			if (argv_count) {
+				if (!tomoyo_argv(bprm->argc - argv_count,
+						 arg_ptr, argc, argv,
+						 checked)) {
+					result = false;
+					break;
+				}
+				argv_count--;
+			} else if (envp_count) {
+				char *cp = strchr(arg_ptr, '=');
+
+				if (cp) {
+					*cp = '\0';
+					if (!tomoyo_envp(arg_ptr, cp + 1,
+							 envc, envp,
+							 checked + argc)) {
+						result = false;
+						break;
+					}
+				}
+				envp_count--;
+			} else {
+				break;
+			}
+			arg_len = 0;
+		}
+		offset = 0;
+		if (!result)
+			break;
+	}
+out:
+	if (result) {
+		int i;
+
+		/* Check not-yet-checked entries. */
+		for (i = 0; i < argc; i++) {
+			if (checked[i])
+				continue;
+			/*
+			 * Return true only if all unchecked indexes in
+			 * bprm->argv[] are not matched.
+			 */
+			if (argv[i].is_not)
+				continue;
+			result = false;
+			break;
+		}
+		for (i = 0; i < envc; envp++, i++) {
+			if (checked[argc + i])
+				continue;
+			/*
+			 * Return true only if all unchecked environ variables
+			 * in bprm->envp[] are either undefined or not matched.
+			 */
+			if ((!envp->value && !envp->is_not) ||
+			    (envp->value && envp->is_not))
+				continue;
+			result = false;
+			break;
+		}
+	}
+	if (checked != local_checked)
+		kfree(checked);
+	return result;
+}
+
+/**
+ * tomoyo_scan_exec_realpath - Check "exec.realpath" parameter of "struct tomoyo_condition".
+ *
+ * @file:  Pointer to "struct file".
+ * @ptr:   Pointer to "struct tomoyo_name_union".
+ * @match: True if "exec.realpath=", false if "exec.realpath!=".
+ *
+ * Returns true on success, false otherwise.
+ */
+static bool tomoyo_scan_exec_realpath(struct file *file,
+				      const struct tomoyo_name_union *ptr,
+				      const bool match)
+{
+	bool result;
+	struct tomoyo_path_info exe;
+
+	if (!file)
+		return false;
+	exe.name = tomoyo_realpath_from_path(&file->f_path);
+	if (!exe.name)
+		return false;
+	tomoyo_fill_path_info(&exe);
+	result = tomoyo_compare_name_union(&exe, ptr);
+	kfree(exe.name);
+	return result == match;
+}
+
+/**
+ * tomoyo_get_dqword - tomoyo_get_name() for a quoted string.
+ *
+ * @start: String to save.
+ *
+ * Returns pointer to "struct tomoyo_path_info" on success, NULL otherwise.
+ */
+static const struct tomoyo_path_info *tomoyo_get_dqword(char *start)
+{
+	char *cp = start + strlen(start) - 1;
+
+	if (cp == start || *start++ != '"' || *cp != '"')
+		return NULL;
+	*cp = '\0';
+	if (*start && !tomoyo_correct_word(start))
+		return NULL;
+	return tomoyo_get_name(start);
+}
+
+/**
+ * tomoyo_parse_name_union_quoted - Parse a quoted word.
+ *
+ * @param: Pointer to "struct tomoyo_acl_param".
+ * @ptr:   Pointer to "struct tomoyo_name_union".
+ *
+ * Returns true on success, false otherwise.
+ */
+static bool tomoyo_parse_name_union_quoted(struct tomoyo_acl_param *param,
+					   struct tomoyo_name_union *ptr)
+{
+	char *filename = param->data;
+
+	if (*filename == '@')
+		return tomoyo_parse_name_union(param, ptr);
+	ptr->filename = tomoyo_get_dqword(filename);
+	return ptr->filename != NULL;
+}
+
+/**
+ * tomoyo_parse_argv - Parse an argv[] condition part.
+ *
+ * @left:  Lefthand value.
+ * @right: Righthand value.
+ * @argv:  Pointer to "struct tomoyo_argv".
+ *
+ * Returns true on success, false otherwise.
+ */
+static bool tomoyo_parse_argv(char *left, char *right,
+			      struct tomoyo_argv *argv)
+{
+	if (tomoyo_parse_ulong(&argv->index, &left) !=
+	    TOMOYO_VALUE_TYPE_DECIMAL || *left++ != ']' || *left)
+		return false;
+	argv->value = tomoyo_get_dqword(right);
+	return argv->value != NULL;
+}
+
+/**
+ * tomoyo_parse_envp - Parse an envp[] condition part.
+ *
+ * @left:  Lefthand value.
+ * @right: Righthand value.
+ * @envp:  Pointer to "struct tomoyo_envp".
+ *
+ * Returns true on success, false otherwise.
+ */
+static bool tomoyo_parse_envp(char *left, char *right,
+			      struct tomoyo_envp *envp)
+{
+	const struct tomoyo_path_info *name;
+	const struct tomoyo_path_info *value;
+	char *cp = left + strlen(left) - 1;
+
+	if (*cp-- != ']' || *cp != '"')
+		goto out;
+	*cp = '\0';
+	if (!tomoyo_correct_word(left))
+		goto out;
+	name = tomoyo_get_name(left);
+	if (!name)
+		goto out;
+	if (!strcmp(right, "NULL")) {
+		value = NULL;
+	} else {
+		value = tomoyo_get_dqword(right);
+		if (!value) {
+			tomoyo_put_name(name);
+			goto out;
+		}
+	}
+	envp->name = name;
+	envp->value = value;
+	return true;
+out:
+	return false;
+}
+
+/**
+ * tomoyo_same_condition - Check for duplicated "struct tomoyo_condition" entry.
+ *
+ * @a: Pointer to "struct tomoyo_condition".
+ * @b: Pointer to "struct tomoyo_condition".
+ *
+ * Returns true if @a == @b, false otherwise.
+ */
+static inline bool tomoyo_same_condition(const struct tomoyo_condition *a,
+					 const struct tomoyo_condition *b)
+{
+	return a->size == b->size && a->condc == b->condc &&
+		a->numbers_count == b->numbers_count &&
+		a->names_count == b->names_count &&
+		a->argc == b->argc && a->envc == b->envc &&
+		a->grant_log == b->grant_log && a->transit == b->transit &&
+		!memcmp(a + 1, b + 1, a->size - sizeof(*a));
+}
+
+/**
+ * tomoyo_condition_type - Get condition type.
+ *
+ * @word: Keyword string.
+ *
+ * Returns one of values in "enum tomoyo_conditions_index" on success,
+ * TOMOYO_MAX_CONDITION_KEYWORD otherwise.
+ */
+static u8 tomoyo_condition_type(const char *word)
+{
+	u8 i;
+
+	for (i = 0; i < TOMOYO_MAX_CONDITION_KEYWORD; i++) {
+		if (!strcmp(word, tomoyo_condition_keyword[i]))
+			break;
+	}
+	return i;
+}
+
+/* Define this to enable debug mode. */
+/* #define DEBUG_CONDITION */
+
+#ifdef DEBUG_CONDITION
+#define dprintk printk
+#else
+#define dprintk(...) do { } while (0)
+#endif
+
+/**
+ * tomoyo_commit_condition - Commit "struct tomoyo_condition".
+ *
+ * @entry: Pointer to "struct tomoyo_condition".
+ *
+ * Returns pointer to "struct tomoyo_condition" on success, NULL otherwise.
+ *
+ * This function merges duplicated entries. This function returns NULL if
+ * @entry is not duplicated but memory quota for policy has exceeded.
+ */
+static struct tomoyo_condition *tomoyo_commit_condition
+(struct tomoyo_condition *entry)
+{
+	struct tomoyo_condition *ptr;
+	bool found = false;
+
+	if (mutex_lock_interruptible(&tomoyo_policy_lock)) {
+		dprintk(KERN_WARNING "%u: %s failed\n", __LINE__, __func__);
+		ptr = NULL;
+		found = true;
+		goto out;
+	}
+	list_for_each_entry(ptr, &tomoyo_condition_list, head.list) {
+		if (!tomoyo_same_condition(ptr, entry) ||
+		    atomic_read(&ptr->head.users) == TOMOYO_GC_IN_PROGRESS)
+			continue;
+		/* Same entry found. Share this entry. */
+		atomic_inc(&ptr->head.users);
+		found = true;
+		break;
+	}
+	if (!found) {
+		if (tomoyo_memory_ok(entry)) {
+			atomic_set(&entry->head.users, 1);
+			list_add(&entry->head.list, &tomoyo_condition_list);
+		} else {
+			found = true;
+			ptr = NULL;
+		}
+	}
+	mutex_unlock(&tomoyo_policy_lock);
+out:
+	if (found) {
+		tomoyo_del_condition(&entry->head.list);
+		kfree(entry);
+		entry = ptr;
+	}
+	return entry;
+}
+
+/**
+ * tomoyo_get_transit_preference - Parse domain transition preference for execve().
+ *
+ * @param: Pointer to "struct tomoyo_acl_param".
+ * @e:     Pointer to "struct tomoyo_condition".
+ *
+ * Returns the condition string part.
+ */
+static char *tomoyo_get_transit_preference(struct tomoyo_acl_param *param,
+					   struct tomoyo_condition *e)
+{
+	char * const pos = param->data;
+	bool flag;
+
+	if (*pos == '<') {
+		e->transit = tomoyo_get_domainname(param);
+		goto done;
+	}
+	{
+		char *cp = strchr(pos, ' ');
+
+		if (cp)
+			*cp = '\0';
+		flag = tomoyo_correct_path(pos) || !strcmp(pos, "keep") ||
+			!strcmp(pos, "initialize") || !strcmp(pos, "reset") ||
+			!strcmp(pos, "child") || !strcmp(pos, "parent");
+		if (cp)
+			*cp = ' ';
+	}
+	if (!flag)
+		return pos;
+	e->transit = tomoyo_get_name(tomoyo_read_token(param));
+done:
+	if (e->transit)
+		return param->data;
+	/*
+	 * Return a bad read-only condition string that will let
+	 * tomoyo_get_condition() return NULL.
+	 */
+	return "/";
+}
+
+/**
+ * tomoyo_get_condition - Parse condition part.
+ *
+ * @param: Pointer to "struct tomoyo_acl_param".
+ *
+ * Returns pointer to "struct tomoyo_condition" on success, NULL otherwise.
+ */
+struct tomoyo_condition *tomoyo_get_condition(struct tomoyo_acl_param *param)
+{
+	struct tomoyo_condition *entry = NULL;
+	struct tomoyo_condition_element *condp = NULL;
+	struct tomoyo_number_union *numbers_p = NULL;
+	struct tomoyo_name_union *names_p = NULL;
+	struct tomoyo_argv *argv = NULL;
+	struct tomoyo_envp *envp = NULL;
+	struct tomoyo_condition e = { };
+	char * const start_of_string =
+		tomoyo_get_transit_preference(param, &e);
+	char * const end_of_string = start_of_string + strlen(start_of_string);
+	char *pos;
+
+rerun:
+	pos = start_of_string;
+	while (1) {
+		u8 left = -1;
+		u8 right = -1;
+		char *left_word = pos;
+		char *cp;
+		char *right_word;
+		bool is_not;
+
+		if (!*left_word)
+			break;
+		/*
+		 * Since left-hand condition does not allow use of "path_group"
+		 * or "number_group" and environment variable's names do not
+		 * accept '=', it is guaranteed that the original line consists
+		 * of one or more repetition of $left$operator$right blocks
+		 * where "$left is free from '=' and ' '" and "$operator is
+		 * either '=' or '!='" and "$right is free from ' '".
+		 * Therefore, we can reconstruct the original line at the end
+		 * of dry run even if we overwrite $operator with '\0'.
+		 */
+		cp = strchr(pos, ' ');
+		if (cp) {
+			*cp = '\0'; /* Will restore later. */
+			pos = cp + 1;
+		} else {
+			pos = "";
+		}
+		right_word = strchr(left_word, '=');
+		if (!right_word || right_word == left_word)
+			goto out;
+		is_not = *(right_word - 1) == '!';
+		if (is_not)
+			*(right_word++ - 1) = '\0'; /* Will restore later. */
+		else if (*(right_word + 1) != '=')
+			*right_word++ = '\0'; /* Will restore later. */
+		else
+			goto out;
+		dprintk(KERN_WARNING "%u: <%s>%s=<%s>\n", __LINE__, left_word,
+			is_not ? "!" : "", right_word);
+		if (!strcmp(left_word, "grant_log")) {
+			if (entry) {
+				if (is_not ||
+				    entry->grant_log != TOMOYO_GRANTLOG_AUTO)
+					goto out;
+				else if (!strcmp(right_word, "yes"))
+					entry->grant_log = TOMOYO_GRANTLOG_YES;
+				else if (!strcmp(right_word, "no"))
+					entry->grant_log = TOMOYO_GRANTLOG_NO;
+				else
+					goto out;
+			}
+			continue;
+		}
+		if (!strncmp(left_word, "exec.argv[", 10)) {
+			if (!argv) {
+				e.argc++;
+				e.condc++;
+			} else {
+				e.argc--;
+				e.condc--;
+				left = TOMOYO_ARGV_ENTRY;
+				argv->is_not = is_not;
+				if (!tomoyo_parse_argv(left_word + 10,
+						       right_word, argv++))
+					goto out;
+			}
+			goto store_value;
+		}
+		if (!strncmp(left_word, "exec.envp[\"", 11)) {
+			if (!envp) {
+				e.envc++;
+				e.condc++;
+			} else {
+				e.envc--;
+				e.condc--;
+				left = TOMOYO_ENVP_ENTRY;
+				envp->is_not = is_not;
+				if (!tomoyo_parse_envp(left_word + 11,
+						       right_word, envp++))
+					goto out;
+			}
+			goto store_value;
+		}
+		left = tomoyo_condition_type(left_word);
+		dprintk(KERN_WARNING "%u: <%s> left=%u\n", __LINE__, left_word,
+			left);
+		if (left == TOMOYO_MAX_CONDITION_KEYWORD) {
+			if (!numbers_p) {
+				e.numbers_count++;
+			} else {
+				e.numbers_count--;
+				left = TOMOYO_NUMBER_UNION;
+				param->data = left_word;
+				if (*left_word == '@' ||
+				    !tomoyo_parse_number_union(param,
+							       numbers_p++))
+					goto out;
+			}
+		}
+		if (!condp)
+			e.condc++;
+		else
+			e.condc--;
+		if (left == TOMOYO_EXEC_REALPATH ||
+		    left == TOMOYO_SYMLINK_TARGET) {
+			if (!names_p) {
+				e.names_count++;
+			} else {
+				e.names_count--;
+				right = TOMOYO_NAME_UNION;
+				param->data = right_word;
+				if (!tomoyo_parse_name_union_quoted(param,
+								    names_p++))
+					goto out;
+			}
+			goto store_value;
+		}
+		right = tomoyo_condition_type(right_word);
+		if (right == TOMOYO_MAX_CONDITION_KEYWORD) {
+			if (!numbers_p) {
+				e.numbers_count++;
+			} else {
+				e.numbers_count--;
+				right = TOMOYO_NUMBER_UNION;
+				param->data = right_word;
+				if (!tomoyo_parse_number_union(param,
+							       numbers_p++))
+					goto out;
+			}
+		}
+store_value:
+		if (!condp) {
+			dprintk(KERN_WARNING "%u: dry_run left=%u right=%u match=%u\n",
+				__LINE__, left, right, !is_not);
+			continue;
+		}
+		condp->left = left;
+		condp->right = right;
+		condp->equals = !is_not;
+		dprintk(KERN_WARNING "%u: left=%u right=%u match=%u\n",
+			__LINE__, condp->left, condp->right,
+			condp->equals);
+		condp++;
+	}
+	dprintk(KERN_INFO "%u: cond=%u numbers=%u names=%u ac=%u ec=%u\n",
+		__LINE__, e.condc, e.numbers_count, e.names_count, e.argc,
+		e.envc);
+	if (entry) {
+		BUG_ON(e.names_count | e.numbers_count | e.argc | e.envc |
+		       e.condc);
+		return tomoyo_commit_condition(entry);
+	}
+	e.size = sizeof(*entry)
+		+ e.condc * sizeof(struct tomoyo_condition_element)
+		+ e.numbers_count * sizeof(struct tomoyo_number_union)
+		+ e.names_count * sizeof(struct tomoyo_name_union)
+		+ e.argc * sizeof(struct tomoyo_argv)
+		+ e.envc * sizeof(struct tomoyo_envp);
+	entry = kzalloc(e.size, GFP_NOFS);
+	if (!entry)
+		goto out2;
+	*entry = e;
+	e.transit = NULL;
+	condp = (struct tomoyo_condition_element *) (entry + 1);
+	numbers_p = (struct tomoyo_number_union *) (condp + e.condc);
+	names_p = (struct tomoyo_name_union *) (numbers_p + e.numbers_count);
+	argv = (struct tomoyo_argv *) (names_p + e.names_count);
+	envp = (struct tomoyo_envp *) (argv + e.argc);
+	{
+		bool flag = false;
+
+		for (pos = start_of_string; pos < end_of_string; pos++) {
+			if (*pos)
+				continue;
+			if (flag) /* Restore " ". */
+				*pos = ' ';
+			else if (*(pos + 1) == '=') /* Restore "!=". */
+				*pos = '!';
+			else /* Restore "=". */
+				*pos = '=';
+			flag = !flag;
+		}
+	}
+	goto rerun;
+out:
+	dprintk(KERN_WARNING "%u: %s failed\n", __LINE__, __func__);
+	if (entry) {
+		tomoyo_del_condition(&entry->head.list);
+		kfree(entry);
+	}
+out2:
+	tomoyo_put_name(e.transit);
+	return NULL;
+}
+
+/**
+ * tomoyo_get_attributes - Revalidate "struct inode".
+ *
+ * @obj: Pointer to "struct tomoyo_obj_info".
+ *
+ * Returns nothing.
+ */
+void tomoyo_get_attributes(struct tomoyo_obj_info *obj)
+{
+	u8 i;
+	struct dentry *dentry = NULL;
+
+	for (i = 0; i < TOMOYO_MAX_PATH_STAT; i++) {
+		struct inode *inode;
+
+		switch (i) {
+		case TOMOYO_PATH1:
+			dentry = obj->path1.dentry;
+			if (!dentry)
+				continue;
+			break;
+		case TOMOYO_PATH2:
+			dentry = obj->path2.dentry;
+			if (!dentry)
+				continue;
+			break;
+		default:
+			if (!dentry)
+				continue;
+			dentry = dget_parent(dentry);
+			break;
+		}
+		inode = d_backing_inode(dentry);
+		if (inode) {
+			struct tomoyo_mini_stat *stat = &obj->stat[i];
+
+			stat->uid  = inode->i_uid;
+			stat->gid  = inode->i_gid;
+			stat->ino  = inode->i_ino;
+			stat->mode = inode->i_mode;
+			stat->dev  = inode->i_sb->s_dev;
+			stat->rdev = inode->i_rdev;
+			obj->stat_valid[i] = true;
+		}
+		if (i & 1) /* TOMOYO_PATH1_PARENT or TOMOYO_PATH2_PARENT */
+			dput(dentry);
+	}
+}
+
+/**
+ * tomoyo_condition - Check condition part.
+ *
+ * @r:    Pointer to "struct tomoyo_request_info".
+ * @cond: Pointer to "struct tomoyo_condition". Maybe NULL.
+ *
+ * Returns true on success, false otherwise.
+ *
+ * Caller holds tomoyo_read_lock().
+ */
+bool tomoyo_condition(struct tomoyo_request_info *r,
+		      const struct tomoyo_condition *cond)
+{
+	u32 i;
+	unsigned long min_v[2] = { 0, 0 };
+	unsigned long max_v[2] = { 0, 0 };
+	const struct tomoyo_condition_element *condp;
+	const struct tomoyo_number_union *numbers_p;
+	const struct tomoyo_name_union *names_p;
+	const struct tomoyo_argv *argv;
+	const struct tomoyo_envp *envp;
+	struct tomoyo_obj_info *obj;
+	u16 condc;
+	u16 argc;
+	u16 envc;
+	struct linux_binprm *bprm = NULL;
+
+	if (!cond)
+		return true;
+	condc = cond->condc;
+	argc = cond->argc;
+	envc = cond->envc;
+	obj = r->obj;
+	if (r->ee)
+		bprm = r->ee->bprm;
+	if (!bprm && (argc || envc))
+		return false;
+	condp = (struct tomoyo_condition_element *) (cond + 1);
+	numbers_p = (const struct tomoyo_number_union *) (condp + condc);
+	names_p = (const struct tomoyo_name_union *)
+		(numbers_p + cond->numbers_count);
+	argv = (const struct tomoyo_argv *) (names_p + cond->names_count);
+	envp = (const struct tomoyo_envp *) (argv + argc);
+	for (i = 0; i < condc; i++) {
+		const bool match = condp->equals;
+		const u8 left = condp->left;
+		const u8 right = condp->right;
+		bool is_bitop[2] = { false, false };
+		u8 j;
+
+		condp++;
+		/* Check argv[] and envp[] later. */
+		if (left == TOMOYO_ARGV_ENTRY || left == TOMOYO_ENVP_ENTRY)
+			continue;
+		/* Check string expressions. */
+		if (right == TOMOYO_NAME_UNION) {
+			const struct tomoyo_name_union *ptr = names_p++;
+			struct tomoyo_path_info *symlink;
+			struct tomoyo_execve *ee;
+			struct file *file;
+
+			switch (left) {
+			case TOMOYO_SYMLINK_TARGET:
+				symlink = obj ? obj->symlink_target : NULL;
+				if (!symlink ||
+				    !tomoyo_compare_name_union(symlink, ptr)
+				    == match)
+					goto out;
+				break;
+			case TOMOYO_EXEC_REALPATH:
+				ee = r->ee;
+				file = ee ? ee->bprm->file : NULL;
+				if (!tomoyo_scan_exec_realpath(file, ptr,
+							       match))
+					goto out;
+				break;
+			}
+			continue;
+		}
+		/* Check numeric or bit-op expressions. */
+		for (j = 0; j < 2; j++) {
+			const u8 index = j ? right : left;
+			unsigned long value = 0;
+
+			switch (index) {
+			case TOMOYO_TASK_UID:
+				value = from_kuid(&init_user_ns, current_uid());
+				break;
+			case TOMOYO_TASK_EUID:
+				value = from_kuid(&init_user_ns, current_euid());
+				break;
+			case TOMOYO_TASK_SUID:
+				value = from_kuid(&init_user_ns, current_suid());
+				break;
+			case TOMOYO_TASK_FSUID:
+				value = from_kuid(&init_user_ns, current_fsuid());
+				break;
+			case TOMOYO_TASK_GID:
+				value = from_kgid(&init_user_ns, current_gid());
+				break;
+			case TOMOYO_TASK_EGID:
+				value = from_kgid(&init_user_ns, current_egid());
+				break;
+			case TOMOYO_TASK_SGID:
+				value = from_kgid(&init_user_ns, current_sgid());
+				break;
+			case TOMOYO_TASK_FSGID:
+				value = from_kgid(&init_user_ns, current_fsgid());
+				break;
+			case TOMOYO_TASK_PID:
+				value = tomoyo_sys_getpid();
+				break;
+			case TOMOYO_TASK_PPID:
+				value = tomoyo_sys_getppid();
+				break;
+			case TOMOYO_TYPE_IS_SOCKET:
+				value = S_IFSOCK;
+				break;
+			case TOMOYO_TYPE_IS_SYMLINK:
+				value = S_IFLNK;
+				break;
+			case TOMOYO_TYPE_IS_FILE:
+				value = S_IFREG;
+				break;
+			case TOMOYO_TYPE_IS_BLOCK_DEV:
+				value = S_IFBLK;
+				break;
+			case TOMOYO_TYPE_IS_DIRECTORY:
+				value = S_IFDIR;
+				break;
+			case TOMOYO_TYPE_IS_CHAR_DEV:
+				value = S_IFCHR;
+				break;
+			case TOMOYO_TYPE_IS_FIFO:
+				value = S_IFIFO;
+				break;
+			case TOMOYO_MODE_SETUID:
+				value = S_ISUID;
+				break;
+			case TOMOYO_MODE_SETGID:
+				value = S_ISGID;
+				break;
+			case TOMOYO_MODE_STICKY:
+				value = S_ISVTX;
+				break;
+			case TOMOYO_MODE_OWNER_READ:
+				value = 0400;
+				break;
+			case TOMOYO_MODE_OWNER_WRITE:
+				value = 0200;
+				break;
+			case TOMOYO_MODE_OWNER_EXECUTE:
+				value = 0100;
+				break;
+			case TOMOYO_MODE_GROUP_READ:
+				value = 0040;
+				break;
+			case TOMOYO_MODE_GROUP_WRITE:
+				value = 0020;
+				break;
+			case TOMOYO_MODE_GROUP_EXECUTE:
+				value = 0010;
+				break;
+			case TOMOYO_MODE_OTHERS_READ:
+				value = 0004;
+				break;
+			case TOMOYO_MODE_OTHERS_WRITE:
+				value = 0002;
+				break;
+			case TOMOYO_MODE_OTHERS_EXECUTE:
+				value = 0001;
+				break;
+			case TOMOYO_EXEC_ARGC:
+				if (!bprm)
+					goto out;
+				value = bprm->argc;
+				break;
+			case TOMOYO_EXEC_ENVC:
+				if (!bprm)
+					goto out;
+				value = bprm->envc;
+				break;
+			case TOMOYO_NUMBER_UNION:
+				/* Fetch values later. */
+				break;
+			default:
+				if (!obj)
+					goto out;
+				if (!obj->validate_done) {
+					tomoyo_get_attributes(obj);
+					obj->validate_done = true;
+				}
+				{
+					u8 stat_index;
+					struct tomoyo_mini_stat *stat;
+
+					switch (index) {
+					case TOMOYO_PATH1_UID:
+					case TOMOYO_PATH1_GID:
+					case TOMOYO_PATH1_INO:
+					case TOMOYO_PATH1_MAJOR:
+					case TOMOYO_PATH1_MINOR:
+					case TOMOYO_PATH1_TYPE:
+					case TOMOYO_PATH1_DEV_MAJOR:
+					case TOMOYO_PATH1_DEV_MINOR:
+					case TOMOYO_PATH1_PERM:
+						stat_index = TOMOYO_PATH1;
+						break;
+					case TOMOYO_PATH2_UID:
+					case TOMOYO_PATH2_GID:
+					case TOMOYO_PATH2_INO:
+					case TOMOYO_PATH2_MAJOR:
+					case TOMOYO_PATH2_MINOR:
+					case TOMOYO_PATH2_TYPE:
+					case TOMOYO_PATH2_DEV_MAJOR:
+					case TOMOYO_PATH2_DEV_MINOR:
+					case TOMOYO_PATH2_PERM:
+						stat_index = TOMOYO_PATH2;
+						break;
+					case TOMOYO_PATH1_PARENT_UID:
+					case TOMOYO_PATH1_PARENT_GID:
+					case TOMOYO_PATH1_PARENT_INO:
+					case TOMOYO_PATH1_PARENT_PERM:
+						stat_index =
+							TOMOYO_PATH1_PARENT;
+						break;
+					case TOMOYO_PATH2_PARENT_UID:
+					case TOMOYO_PATH2_PARENT_GID:
+					case TOMOYO_PATH2_PARENT_INO:
+					case TOMOYO_PATH2_PARENT_PERM:
+						stat_index =
+							TOMOYO_PATH2_PARENT;
+						break;
+					default:
+						goto out;
+					}
+					if (!obj->stat_valid[stat_index])
+						goto out;
+					stat = &obj->stat[stat_index];
+					switch (index) {
+					case TOMOYO_PATH1_UID:
+					case TOMOYO_PATH2_UID:
+					case TOMOYO_PATH1_PARENT_UID:
+					case TOMOYO_PATH2_PARENT_UID:
+						value = from_kuid(&init_user_ns, stat->uid);
+						break;
+					case TOMOYO_PATH1_GID:
+					case TOMOYO_PATH2_GID:
+					case TOMOYO_PATH1_PARENT_GID:
+					case TOMOYO_PATH2_PARENT_GID:
+						value = from_kgid(&init_user_ns, stat->gid);
+						break;
+					case TOMOYO_PATH1_INO:
+					case TOMOYO_PATH2_INO:
+					case TOMOYO_PATH1_PARENT_INO:
+					case TOMOYO_PATH2_PARENT_INO:
+						value = stat->ino;
+						break;
+					case TOMOYO_PATH1_MAJOR:
+					case TOMOYO_PATH2_MAJOR:
+						value = MAJOR(stat->dev);
+						break;
+					case TOMOYO_PATH1_MINOR:
+					case TOMOYO_PATH2_MINOR:
+						value = MINOR(stat->dev);
+						break;
+					case TOMOYO_PATH1_TYPE:
+					case TOMOYO_PATH2_TYPE:
+						value = stat->mode & S_IFMT;
+						break;
+					case TOMOYO_PATH1_DEV_MAJOR:
+					case TOMOYO_PATH2_DEV_MAJOR:
+						value = MAJOR(stat->rdev);
+						break;
+					case TOMOYO_PATH1_DEV_MINOR:
+					case TOMOYO_PATH2_DEV_MINOR:
+						value = MINOR(stat->rdev);
+						break;
+					case TOMOYO_PATH1_PERM:
+					case TOMOYO_PATH2_PERM:
+					case TOMOYO_PATH1_PARENT_PERM:
+					case TOMOYO_PATH2_PARENT_PERM:
+						value = stat->mode & S_IALLUGO;
+						break;
+					}
+				}
+				break;
+			}
+			max_v[j] = value;
+			min_v[j] = value;
+			switch (index) {
+			case TOMOYO_MODE_SETUID:
+			case TOMOYO_MODE_SETGID:
+			case TOMOYO_MODE_STICKY:
+			case TOMOYO_MODE_OWNER_READ:
+			case TOMOYO_MODE_OWNER_WRITE:
+			case TOMOYO_MODE_OWNER_EXECUTE:
+			case TOMOYO_MODE_GROUP_READ:
+			case TOMOYO_MODE_GROUP_WRITE:
+			case TOMOYO_MODE_GROUP_EXECUTE:
+			case TOMOYO_MODE_OTHERS_READ:
+			case TOMOYO_MODE_OTHERS_WRITE:
+			case TOMOYO_MODE_OTHERS_EXECUTE:
+				is_bitop[j] = true;
+			}
+		}
+		if (left == TOMOYO_NUMBER_UNION) {
+			/* Fetch values now. */
+			const struct tomoyo_number_union *ptr = numbers_p++;
+
+			min_v[0] = ptr->values[0];
+			max_v[0] = ptr->values[1];
+		}
+		if (right == TOMOYO_NUMBER_UNION) {
+			/* Fetch values now. */
+			const struct tomoyo_number_union *ptr = numbers_p++;
+
+			if (ptr->group) {
+				if (tomoyo_number_matches_group(min_v[0],
+								max_v[0],
+								ptr->group)
+				    == match)
+					continue;
+			} else {
+				if ((min_v[0] <= ptr->values[1] &&
+				     max_v[0] >= ptr->values[0]) == match)
+					continue;
+			}
+			goto out;
+		}
+		/*
+		 * Bit operation is valid only when counterpart value
+		 * represents permission.
+		 */
+		if (is_bitop[0] && is_bitop[1]) {
+			goto out;
+		} else if (is_bitop[0]) {
+			switch (right) {
+			case TOMOYO_PATH1_PERM:
+			case TOMOYO_PATH1_PARENT_PERM:
+			case TOMOYO_PATH2_PERM:
+			case TOMOYO_PATH2_PARENT_PERM:
+				if (!(max_v[0] & max_v[1]) == !match)
+					continue;
+			}
+			goto out;
+		} else if (is_bitop[1]) {
+			switch (left) {
+			case TOMOYO_PATH1_PERM:
+			case TOMOYO_PATH1_PARENT_PERM:
+			case TOMOYO_PATH2_PERM:
+			case TOMOYO_PATH2_PARENT_PERM:
+				if (!(max_v[0] & max_v[1]) == !match)
+					continue;
+			}
+			goto out;
+		}
+		/* Normal value range comparison. */
+		if ((min_v[0] <= max_v[1] && max_v[0] >= min_v[1]) == match)
+			continue;
+out:
+		return false;
+	}
+	/* Check argv[] and envp[] now. */
+	if (r->ee && (argc || envc))
+		return tomoyo_scan_bprm(r->ee, argc, argv, envc, envp);
+	return true;
+}
+
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * common LSM auditing functions
+ *
+ * Based on code written for SELinux by :
+ *			Stephen Smalley
+ * 			James Morris <jmorris@redhat.com>
+ * Author : Etienne Basset, <etienne.basset@ensta.org>
+ */
+
+#include <linux/types.h>
+#include <linux/stddef.h>
+#include <linux/kernel.h>
+#include <linux/gfp.h>
+#include <linux/fs.h>
+#include <linux/init.h>
+#include <net/sock.h>
+#include <linux/un.h>
+#include <net/af_unix.h>
+#include <linux/audit.h>
+#include <linux/ipv6.h>
+#include <linux/ip.h>
+#include <net/ip.h>
+#include <net/ipv6.h>
+#include <linux/tcp.h>
+#include <linux/udp.h>
+#include <linux/sctp.h>
+#include <linux/lsm_audit.h>
+#include <linux/security.h>
+
+/**
+ * ipv4_skb_to_auditdata : fill auditdata from skb
+ * @skb : the skb
+ * @ad : the audit data to fill
+ * @proto : the layer 4 protocol
+ *
+ * return  0 on success
+ */
+int ipv4_skb_to_auditdata(struct sk_buff *skb,
+		struct common_audit_data *ad, u8 *proto)
+{
+	int ret = 0;
+	struct iphdr *ih;
+
+	ih = ip_hdr(skb);
+	ad->u.net->v4info.saddr = ih->saddr;
+	ad->u.net->v4info.daddr = ih->daddr;
+
+	if (proto)
+		*proto = ih->protocol;
+	/* non initial fragment */
+	if (ntohs(ih->frag_off) & IP_OFFSET)
+		return 0;
+
+	switch (ih->protocol) {
+	case IPPROTO_TCP: {
+		struct tcphdr *th = tcp_hdr(skb);
+
+		ad->u.net->sport = th->source;
+		ad->u.net->dport = th->dest;
+		break;
+	}
+	case IPPROTO_UDP: {
+		struct udphdr *uh = udp_hdr(skb);
+
+		ad->u.net->sport = uh->source;
+		ad->u.net->dport = uh->dest;
+		break;
+	}
+	case IPPROTO_SCTP: {
+		struct sctphdr *sh = sctp_hdr(skb);
+
+		ad->u.net->sport = sh->source;
+		ad->u.net->dport = sh->dest;
+		break;
+	}
+	default:
+		ret = -EINVAL;
+	}
+	return ret;
+}
+#if IS_ENABLED(CONFIG_IPV6)
+/**
+ * ipv6_skb_to_auditdata : fill auditdata from skb
+ * @skb : the skb
+ * @ad : the audit data to fill
+ * @proto : the layer 4 protocol
+ *
+ * return  0 on success
+ */
+int ipv6_skb_to_auditdata(struct sk_buff *skb,
+		struct common_audit_data *ad, u8 *proto)
+{
+	int offset, ret = 0;
+	struct ipv6hdr *ip6;
+	u8 nexthdr;
+	__be16 frag_off;
+
+	ip6 = ipv6_hdr(skb);
+	ad->u.net->v6info.saddr = ip6->saddr;
+	ad->u.net->v6info.daddr = ip6->daddr;
+	/* IPv6 can have several extension header before the Transport header
+	 * skip them */
+	offset = skb_network_offset(skb);
+	offset += sizeof(*ip6);
+	nexthdr = ip6->nexthdr;
+	offset = ipv6_skip_exthdr(skb, offset, &nexthdr, &frag_off);
+	if (offset < 0)
+		return 0;
+	if (proto)
+		*proto = nexthdr;
+	switch (nexthdr) {
+	case IPPROTO_TCP: {
+		struct tcphdr _tcph, *th;
+
+		th = skb_header_pointer(skb, offset, sizeof(_tcph), &_tcph);
+		if (th == NULL)
+			break;
+
+		ad->u.net->sport = th->source;
+		ad->u.net->dport = th->dest;
+		break;
+	}
+	case IPPROTO_UDP: {
+		struct udphdr _udph, *uh;
+
+		uh = skb_header_pointer(skb, offset, sizeof(_udph), &_udph);
+		if (uh == NULL)
+			break;
+
+		ad->u.net->sport = uh->source;
+		ad->u.net->dport = uh->dest;
+		break;
+	}
+	case IPPROTO_SCTP: {
+		struct sctphdr _sctph, *sh;
+
+		sh = skb_header_pointer(skb, offset, sizeof(_sctph), &_sctph);
+		if (sh == NULL)
+			break;
+		ad->u.net->sport = sh->source;
+		ad->u.net->dport = sh->dest;
+		break;
+	}
+	default:
+		ret = -EINVAL;
+	}
+	return ret;
+}
+#endif
+
+
+static inline void print_ipv6_addr(struct audit_buffer *ab,
+				   const struct in6_addr *addr, __be16 port,
+				   const char *name1, const char *name2)
+{
+	if (!ipv6_addr_any(addr))
+		audit_log_format(ab, " %s=%pI6c", name1, addr);
+	if (port)
+		audit_log_format(ab, " %s=%d", name2, ntohs(port));
+}
+
+static inline void print_ipv4_addr(struct audit_buffer *ab, __be32 addr,
+				   __be16 port, const char *name1, const char *name2)
+{
+	if (addr)
+		audit_log_format(ab, " %s=%pI4", name1, &addr);
+	if (port)
+		audit_log_format(ab, " %s=%d", name2, ntohs(port));
+}
+
+/**
+ * audit_log_lsm_data - helper to log common LSM audit data
+ * @ab : the audit buffer
+ * @a : common audit data
+ */
+void audit_log_lsm_data(struct audit_buffer *ab,
+			const struct common_audit_data *a)
+{
+	/*
+	 * To keep stack sizes in check force programmers to notice if they
+	 * start making this union too large!  See struct lsm_network_audit
+	 * as an example of how to deal with large data.
+	 */
+	BUILD_BUG_ON(sizeof(a->u) > sizeof(void *)*2);
+
+	switch (a->type) {
+	case LSM_AUDIT_DATA_NONE:
+		return;
+	case LSM_AUDIT_DATA_IPC:
+		audit_log_format(ab, " ipc_key=%d ", a->u.ipc_id);
+		break;
+	case LSM_AUDIT_DATA_CAP:
+		audit_log_format(ab, " capability=%d ", a->u.cap);
+		break;
+	case LSM_AUDIT_DATA_PATH: {
+		struct inode *inode;
+
+		audit_log_d_path(ab, " path=", &a->u.path);
+
+		inode = d_backing_inode(a->u.path.dentry);
+		if (inode) {
+			audit_log_format(ab, " dev=");
+			audit_log_untrustedstring(ab, inode->i_sb->s_id);
+			audit_log_format(ab, " ino=%lu", inode->i_ino);
+		}
+		break;
+	}
+	case LSM_AUDIT_DATA_FILE: {
+		struct inode *inode;
+
+		audit_log_d_path(ab, " path=", &a->u.file->f_path);
+
+		inode = file_inode(a->u.file);
+		if (inode) {
+			audit_log_format(ab, " dev=");
+			audit_log_untrustedstring(ab, inode->i_sb->s_id);
+			audit_log_format(ab, " ino=%lu", inode->i_ino);
+		}
+		break;
+	}
+	case LSM_AUDIT_DATA_IOCTL_OP: {
+		struct inode *inode;
+
+		audit_log_d_path(ab, " path=", &a->u.op->path);
+
+		inode = a->u.op->path.dentry->d_inode;
+		if (inode) {
+			audit_log_format(ab, " dev=");
+			audit_log_untrustedstring(ab, inode->i_sb->s_id);
+			audit_log_format(ab, " ino=%lu", inode->i_ino);
+		}
+
+		audit_log_format(ab, " ioctlcmd=0x%hx", a->u.op->cmd);
+		break;
+	}
+	case LSM_AUDIT_DATA_DENTRY: {
+		struct inode *inode;
+
+		audit_log_format(ab, " name=");
+		spin_lock(&a->u.dentry->d_lock);
+		audit_log_untrustedstring(ab, a->u.dentry->d_name.name);
+		spin_unlock(&a->u.dentry->d_lock);
+
+		inode = d_backing_inode(a->u.dentry);
+		if (inode) {
+			audit_log_format(ab, " dev=");
+			audit_log_untrustedstring(ab, inode->i_sb->s_id);
+			audit_log_format(ab, " ino=%lu", inode->i_ino);
+		}
+		break;
+	}
+	case LSM_AUDIT_DATA_INODE: {
+		struct dentry *dentry;
+		struct inode *inode;
+
+		rcu_read_lock();
+		inode = a->u.inode;
+		dentry = d_find_alias_rcu(inode);
+		if (dentry) {
+			audit_log_format(ab, " name=");
+			spin_lock(&dentry->d_lock);
+			audit_log_untrustedstring(ab, dentry->d_name.name);
+			spin_unlock(&dentry->d_lock);
+		}
+		audit_log_format(ab, " dev=");
+		audit_log_untrustedstring(ab, inode->i_sb->s_id);
+		audit_log_format(ab, " ino=%lu", inode->i_ino);
+		rcu_read_unlock();
+		break;
+	}
+	case LSM_AUDIT_DATA_TASK: {
+		struct task_struct *tsk = a->u.tsk;
+		if (tsk) {
+			pid_t pid = task_tgid_nr(tsk);
+			if (pid) {
+				char tskcomm[sizeof(tsk->comm)];
+				audit_log_format(ab, " opid=%d ocomm=", pid);
+				audit_log_untrustedstring(ab,
+				    get_task_comm(tskcomm, tsk));
+			}
+		}
+		break;
+	}
+	case LSM_AUDIT_DATA_NET:
+		if (a->u.net->sk) {
+			const struct sock *sk = a->u.net->sk;
+			const struct unix_sock *u;
+			struct unix_address *addr;
+			int len = 0;
+			char *p = NULL;
+
+			switch (sk->sk_family) {
+			case AF_INET: {
+				const struct inet_sock *inet = inet_sk(sk);
+
+				print_ipv4_addr(ab, inet->inet_rcv_saddr,
+						inet->inet_sport,
+						"laddr", "lport");
+				print_ipv4_addr(ab, inet->inet_daddr,
+						inet->inet_dport,
+						"faddr", "fport");
+				break;
+			}
+#if IS_ENABLED(CONFIG_IPV6)
+			case AF_INET6: {
+				const struct inet_sock *inet = inet_sk(sk);
+
+				print_ipv6_addr(ab, &sk->sk_v6_rcv_saddr,
+						inet->inet_sport,
+						"laddr", "lport");
+				print_ipv6_addr(ab, &sk->sk_v6_daddr,
+						inet->inet_dport,
+						"faddr", "fport");
+				break;
+			}
+#endif
+			case AF_UNIX:
+				u = unix_sk(sk);
+				addr = smp_load_acquire(&u->addr);
+				if (!addr)
+					break;
+				if (u->path.dentry) {
+					audit_log_d_path(ab, " path=", &u->path);
+					break;
+				}
+				len = addr->len-sizeof(short);
+				p = &addr->name->sun_path[0];
+				audit_log_format(ab, " path=");
+				if (*p)
+					audit_log_untrustedstring(ab, p);
+				else
+					audit_log_n_hex(ab, p, len);
+				break;
+			}
+		}
+
+		switch (a->u.net->family) {
+		case AF_INET:
+			print_ipv4_addr(ab, a->u.net->v4info.saddr,
+					a->u.net->sport,
+					"saddr", "src");
+			print_ipv4_addr(ab, a->u.net->v4info.daddr,
+					a->u.net->dport,
+					"daddr", "dest");
+			break;
+		case AF_INET6:
+			print_ipv6_addr(ab, &a->u.net->v6info.saddr,
+					a->u.net->sport,
+					"saddr", "src");
+			print_ipv6_addr(ab, &a->u.net->v6info.daddr,
+					a->u.net->dport,
+					"daddr", "dest");
+			break;
+		}
+		if (a->u.net->netif > 0) {
+			struct net_device *dev;
+
+			/* NOTE: we always use init's namespace */
+			dev = dev_get_by_index(&init_net, a->u.net->netif);
+			if (dev) {
+				audit_log_format(ab, " netif=%s", dev->name);
+				dev_put(dev);
+			}
+		}
+		break;
+#ifdef CONFIG_KEYS
+	case LSM_AUDIT_DATA_KEY:
+		audit_log_format(ab, " key_serial=%u", a->u.key_struct.key);
+		if (a->u.key_struct.key_desc) {
+			audit_log_format(ab, " key_desc=");
+			audit_log_untrustedstring(ab, a->u.key_struct.key_desc);
+		}
+		break;
+#endif
+	case LSM_AUDIT_DATA_KMOD:
+		audit_log_format(ab, " kmod=");
+		audit_log_untrustedstring(ab, a->u.kmod_name);
+		break;
+	case LSM_AUDIT_DATA_IBPKEY: {
+		struct in6_addr sbn_pfx;
+
+		memset(&sbn_pfx.s6_addr, 0,
+		       sizeof(sbn_pfx.s6_addr));
+		memcpy(&sbn_pfx.s6_addr, &a->u.ibpkey->subnet_prefix,
+		       sizeof(a->u.ibpkey->subnet_prefix));
+		audit_log_format(ab, " pkey=0x%x subnet_prefix=%pI6c",
+				 a->u.ibpkey->pkey, &sbn_pfx);
+		break;
+	}
+	case LSM_AUDIT_DATA_IBENDPORT:
+		audit_log_format(ab, " device=%s port_num=%u",
+				 a->u.ibendport->dev_name,
+				 a->u.ibendport->port);
+		break;
+	case LSM_AUDIT_DATA_LOCKDOWN:
+		audit_log_format(ab, " lockdown_reason=\"%s\"",
+				 lockdown_reasons[a->u.reason]);
+		break;
+	case LSM_AUDIT_DATA_ANONINODE:
+		audit_log_format(ab, " anonclass=%s", a->u.anonclass);
+		break;
+	case LSM_AUDIT_DATA_NLMSGTYPE:
+		audit_log_format(ab, " nl-msgtype=%hu", a->u.nlmsg_type);
+		break;
+	} /* switch (a->type) */
+}
+
+/**
+ * dump_common_audit_data - helper to dump common audit data
+ * @ab : the audit buffer
+ * @a : common audit data
+ */
+static void dump_common_audit_data(struct audit_buffer *ab,
+				   const struct common_audit_data *a)
+{
+	char comm[sizeof(current->comm)];
+
+	audit_log_format(ab, " pid=%d comm=", task_tgid_nr(current));
+	audit_log_untrustedstring(ab, get_task_comm(comm, current));
+	audit_log_lsm_data(ab, a);
+}
+
+/**
+ * common_lsm_audit - generic LSM auditing function
+ * @a:  auxiliary audit data
+ * @pre_audit: lsm-specific pre-audit callback
+ * @post_audit: lsm-specific post-audit callback
+ *
+ * setup the audit buffer for common security information
+ * uses callback to print LSM specific information
+ */
+void common_lsm_audit(struct common_audit_data *a,
+	void (*pre_audit)(struct audit_buffer *, void *),
+	void (*post_audit)(struct audit_buffer *, void *))
+{
+	struct audit_buffer *ab;
+
+	if (a == NULL)
+		return;
+	/* we use GFP_ATOMIC so we won't sleep */
+	ab = audit_log_start(audit_context(), GFP_ATOMIC | __GFP_NOWARN,
+			     AUDIT_AVC);
+
+	if (ab == NULL)
+		return;
+
+	if (pre_audit)
+		pre_audit(ab, a);
+
+	dump_common_audit_data(ab, a);
+
+	if (post_audit)
+		post_audit(ab, a);
+
+	audit_log_end(ab);
+}

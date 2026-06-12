@@ -1,37 +1,45 @@
-# Self-Attention Toy Transformer
+# Toy transformer impementation
 
-A small character-level Transformer built from scratch in PyTorch, with rotary embeddings and causal self-attention.
+- A simple implementation of a transformer model, focused on clarity rather than performance.
+- It implements MHSA, RoPE, different encoder types, and a training loop with some example datasets.
 
-## Files
-
-- `model.py`: model + attention/rotary implementation
-- `train.py`: training loop and checkpoint saving
-- `generate.py`: text generation from a saved checkpoint
-- `test.py`: quick checkpoint parameter-count check
-- `input.txt`: training corpus
-
-## Setup
+### Installation
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Run
+### Training
 
-Train (default 100 epochs):
-```bash
-python train.py
+```python
+text = open('input.txt', 'r').read()
+
+model_config = dict(
+    n_vocab=None,
+    max_len=256,      # Expanded from 32! Model can now read/remember 256 characters at once
+    d_embed=384,      # Increased from 128. Gives each token a much richer vector space
+    n_heads=6,        # 384 / 6 = 64 head dimension (d_k stays 64, which is the sweet spot)
+    d_hidden=1536,
+    n_blocks=6,
+    base=10_000
+)
+
+training_config = dict(
+    batch_size=64,
+    block_size=256,
+    epochs=100,
+    train_split=0.9
+)
+
+trainer = Trainer(
+    encoder_type='char',
+    text=text,
+    model_config=model_config,
+    training_config=training_config
+)
+trainer.train()
 ```
 
-Generate text:
-
-```bash
-python generate.py
-```
-
-## Notes
-
-- Checkpoints are saved as timestamped `.pt` files.
-- Device selection is automatic: CUDA, then MPS, then CPU.
+## GUI
+There exists a GUI tool as well:
+![GUI Screenshot](gui_screenshot.png)
